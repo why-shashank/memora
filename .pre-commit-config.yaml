@@ -1,0 +1,26 @@
+# Hooks run the tools from uv.lock (language: system) so pre-commit and
+# `uv run ruff/mypy` can never disagree on versions.
+repos:
+  - repo: local
+    hooks:
+      - id: ruff-check
+        name: ruff check
+        entry: uv run ruff check --fix
+        language: system
+        types: [python]
+      - id: ruff-format
+        name: ruff format
+        entry: uv run ruff format
+        language: system
+        types: [python]
+      - id: mypy
+        name: mypy
+        entry: uv run mypy
+        language: system
+        pass_filenames: false
+        types: [python]
+      - id: conventional-commit-msg
+        name: conventional commit message
+        entry: scripts/check_commit_msg.sh
+        language: script
+        stages: [commit-msg]
