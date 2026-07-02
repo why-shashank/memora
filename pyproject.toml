@@ -6,7 +6,11 @@ readme = "README.md"
 requires-python = ">=3.12"
 license = "Apache-2.0"
 dependencies = [
+    "alembic>=1.18.5",
+    "asyncpg>=0.31.0",
+    "pgvector>=0.4.2",
     "pydantic-settings>=2.14.2",
+    "sqlalchemy[asyncio]>=2.0.51",
 ]
 
 [dependency-groups]
@@ -14,7 +18,9 @@ dev = [
     "mypy>=2.1.0",
     "pre-commit>=4.6.0",
     "pytest>=8",
+    "pytest-asyncio>=1.4.0",
     "ruff>=0.15.20",
+    "testcontainers[postgres]>=4.14.2",
 ]
 # only needed to re-run the Phase-0 spikes: uv sync --group spikes
 spikes = ["sentence-transformers>=3", "psycopg[binary]>=3", "numpy"]
@@ -28,6 +34,7 @@ packages = ["memora"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+asyncio_mode = "auto"
 
 [tool.ruff]
 line-length = 100
@@ -39,3 +46,8 @@ extend-select = ["I", "B", "UP"]
 [tool.mypy]
 packages = ["memora"]
 strict = true
+
+[[tool.mypy.overrides]]
+# pgvector ships no type stubs / py.typed marker
+module = "pgvector.*"
+ignore_missing_imports = true
