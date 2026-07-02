@@ -1,0 +1,45 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+env/
+
+# Tooling caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Env / secrets (BYO LLM keys live here — never commit)
+.env
+.env.*
+!.env.example
+
+# Local data / model weights (root-level only — a leading "/" anchors the
+# pattern so packages like memora/models/ are NOT ignored)
+*.sqlite
+*.db
+/data/
+/models/
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
+
+# Internal docs — kept local, not tracked in git
+prd.md
+prd-mnemo-v0.1-archive.md
+development-plan.md
+CLAUDE.md
+TASKS.md
+learnings.md
+
+# De-risking spikes — throwaway experiments, findings recorded in READMEs + TASKS.md
+spikes/
