@@ -5,7 +5,9 @@ description = "Trust-first memory engine for AI agents"
 readme = "README.md"
 requires-python = ">=3.12"
 license = "Apache-2.0"
-dependencies = []
+dependencies = [
+    "pydantic-settings>=2.14.2",
+]
 
 [dependency-groups]
 dev = [
