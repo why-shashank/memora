@@ -27,7 +27,8 @@ class Memory(Base):
     # correction | policy | entity_fact | preference | commitment | procedure
     # (validated at the DTO layer, M1.1 — kept as text in the DB to avoid enum migrations)
     type: Mapped[str] = mapped_column(Text)
-    # candidate | verified | promoted | superseded | deleted — nothing is born promoted
+    # candidate | verified | promoted | superseded | deleted. Default is candidate, but
+    # human corrections write straight to promoted (FR-1.1/FR-2.3 — trusted on write)
     status: Mapped[str] = mapped_column(Text, server_default=text("'candidate'"))
 
     # scope
@@ -38,7 +39,8 @@ class Memory(Base):
 
     # provenance
     source: Mapped[str | None] = mapped_column(Text)
-    actor_type: Mapped[str | None] = mapped_column(Text)  # human | agent | system
+    # human_correction | human_review | agent | user_stated | system (PRD §13 — drives weighting)
+    actor_type: Mapped[str | None] = mapped_column(Text)
 
     # temporal validity
     valid_from: Mapped[datetime] = mapped_column(
