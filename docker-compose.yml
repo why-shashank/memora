@@ -30,13 +30,13 @@ services:
       postgres:
         condition: service_healthy
     healthcheck:
-      # bare app for now — M0.7 replaces this with GET /healthz
+      # readiness, not liveness: /healthz answers 200 only when the api can reach the DB
       test:
         [
           "CMD",
           "python3",
           "-c",
-          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/openapi.json')",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz')",
         ]
       interval: 10s
       timeout: 5s
