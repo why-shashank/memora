@@ -9,14 +9,17 @@ dependencies = [
     "alembic>=1.18.5",
     "anthropic>=0.116.0",
     "asyncpg>=0.31.0",
+    "fastapi>=0.139.0",
     "pgvector>=0.4.2",
     "pydantic-settings>=2.14.2",
     "sqlalchemy[asyncio]>=2.0.51",
+    "uvicorn[standard]>=0.50.0",
 ]
 
 [project.optional-dependencies]
 local = [
     "sentence-transformers>=3",
+    "torch>=2", # declared so the pytorch-cpu index pin below applies (uv sources are direct-deps-only)
 ]
 
 [dependency-groups]
@@ -28,9 +31,20 @@ dev = [
     "ruff>=0.15.20",
     "sentence-transformers>=3",
     "testcontainers[postgres]>=4.14.2",
+    "torch>=2",
 ]
 # only needed to re-run the Phase-0 spikes: uv sync --group spikes
 spikes = ["sentence-transformers>=3", "psycopg[binary]>=3", "numpy"]
+
+# CPU-only torch on Linux (the docker image): the default PyPI wheel drags in ~10GB
+# of CUDA libraries we never use — memora's local embedding path is CPU inference.
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[tool.uv.sources]
+torch = [{ index = "pytorch-cpu", marker = "sys_platform == 'linux'" }]
 
 [build-system]
 requires = ["hatchling"]

@@ -1,0 +1,47 @@
+# memora self-host stack — `docker compose up` from the repo root is the product.
+# Worker service lands with the queue (M1.3); api healthcheck moves to /healthz (M0.7).
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: memora
+      POSTGRES_PASSWORD: memora # dev default — override before exposing anything
+      POSTGRES_DB: memora
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      - "5432:5432" # exposed so local dev tooling (psql, api run outside docker) can reach it
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U memora -d memora"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  api:
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile
+    environment:
+      MEMORA_DATABASE_URL: postgresql+asyncpg://memora:memora@postgres:5432/memora
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      # bare app for now — M0.7 replaces this with GET /healthz
+      test:
+        [
+          "CMD",
+          "python3",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/openapi.json')",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+volumes:
+  pgdata:
