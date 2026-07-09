@@ -7,6 +7,7 @@ from typing import Annotated
 import structlog
 from fastapi import Depends, FastAPI, Request
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel, ConfigDict, Field
 
 from memora.config import Settings
 from memora.observability.logging import configure_logging
@@ -20,6 +21,14 @@ log = structlog.get_logger()
 def get_storage(request: Request) -> StorageBackend:
     storage: StorageBackend = request.app.state.storage
     return storage
+
+
+class IngestRequest(BaseModel):
+    """POST /v1/memories body — an interaction to remember (extraction runs async)."""
+
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    conversation: str = Field(min_length=1)
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -41,6 +50,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if await storage.ping():
             return JSONResponse({"status": "ok"})
         return JSONResponse({"status": "unavailable"}, status_code=503)
+
+    @app.post("/v1/memories", status_code=202)
+    async def ingest_memories(
+        body: IngestRequest, storage: Annotated[StorageBackend, Depends(get_storage)]
+    ) -> dict[str, str]:
+        # 202: accepted for async extraction — the API never blocks on the LLM
+        job_id = await storage.enqueue_extraction({"conversation": body.conversation})
+        return {"job_id": str(job_id)}
 
     return app
 

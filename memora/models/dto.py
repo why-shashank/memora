@@ -59,3 +59,4 @@ class MemoryCreate(BaseModel):
     type: MemoryType
     scope: Scope = Field(default_factory=Scope)
     actor_type: ActorType = ActorType.agent
+    confidence: float | None = Field(default=None, ge=0.0, le=1.0)
