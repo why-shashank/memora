@@ -37,6 +37,12 @@ def test_unknown_type_is_rejected() -> None:
         MemoryCreate(content="x", type="nonsense")
 
 
+def test_scope_rejects_unknown_fields() -> None:
+    # a typo'd scope key must fail loudly, not silently store an unscoped memory
+    with pytest.raises(ValidationError):
+        Scope(userid="u1")  # type: ignore[call-arg]
+
+
 def test_unknown_actor_type_is_rejected() -> None:
     with pytest.raises(ValidationError):
         MemoryCreate(content="x", type="policy", actor_type="intruder")

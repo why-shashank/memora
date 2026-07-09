@@ -133,6 +133,49 @@ async def test_failed_extraction_retries_then_dead_letters(store: PostgresStorag
     assert n_memories == 0  # nothing half-written
 
 
+async def test_process_one_threads_scope_and_actor_onto_memories(store: PostgresStorage) -> None:
+    await store.enqueue_extraction(
+        {
+            "conversation": "chat",
+            "scope": {"user_id": "u-42", "agent_id": "helper", "run_id": None, "app_id": "support"},
+            "actor_type": "user_stated",
+        }
+    )
+
+    assert await process_one(store, StubLLM(_EXTRACTION_REPLY)) is True
+
+    async with store.session_factory() as session:
+        rows = (
+            await session.execute(
+                text("SELECT user_id, agent_id, run_id, app_id, actor_type FROM memories")
+            )
+        ).all()
+    assert len(rows) == 2  # every extracted memory carries the interaction's attribution
+    for row in rows:
+        assert (row.user_id, row.agent_id, row.run_id, row.app_id) == (
+            "u-42",
+            "helper",
+            None,
+            "support",
+        )
+        assert row.actor_type == "user_stated"
+
+
+async def test_process_one_defaults_scope_and_actor_when_absent(store: PostgresStorage) -> None:
+    # a payload without attribution (M1.3-era shape) still processes: unscoped, agent actor
+    await store.enqueue_extraction({"conversation": "chat"})
+
+    assert await process_one(store, StubLLM(_EXTRACTION_REPLY)) is True
+
+    async with store.session_factory() as session:
+        rows = (
+            await session.execute(text("SELECT user_id, app_id, actor_type FROM memories"))
+        ).all()
+    assert len(rows) == 2
+    for row in rows:
+        assert (row.user_id, row.app_id, row.actor_type) == (None, None, "agent")
+
+
 async def test_worker_loop_survives_unexpected_errors(store: PostgresStorage) -> None:
     # an LLM/API blip (auth, rate limit, network) is not ExtractionError — the loop
     # must absorb it and keep polling, not die and take the compose service with it

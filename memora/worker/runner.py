@@ -13,7 +13,7 @@ import structlog
 from pydantic import ValidationError
 
 from memora.extraction import ExtractionError, extract_memories
-from memora.models import MemoryCreate
+from memora.models import ActorType, MemoryCreate, Scope
 from memora.providers.base import LLMProvider
 from memora.store.base import StorageBackend
 
@@ -43,16 +43,23 @@ async def process_one(storage: StorageBackend, llm: LLMProvider) -> bool:
         )
         return True
 
+    # every memory from this interaction carries its attribution (API-validated;
+    # .get defaults keep pre-M1.4 payloads processable)
+    scope = Scope(**job.payload.get("scope", {}))
+    actor_type = ActorType(job.payload.get("actor_type", ActorType.agent))
+
     items: list[MemoryCreate] = []
     for candidate in extracted:
         try:
-            # scope/actor threading lands in M1.4, supersedes resolution in M3.2,
-            # embedding-on-write with its consumer — retrieval (M2.1)
+            # supersedes resolution lands in M3.2, embedding-on-write with its
+            # consumer — retrieval (M2.1)
             items.append(
                 MemoryCreate(
                     content=candidate.content,
                     type=candidate.type,
                     confidence=candidate.confidence,
+                    scope=scope,
+                    actor_type=actor_type,
                 )
             )
         except ValidationError:

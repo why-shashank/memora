@@ -38,7 +38,13 @@ class ActorType(StrEnum):
 
 
 class Scope(BaseModel):
-    """Who/what a memory belongs to (PRD §13). All optional — absence = unscoped."""
+    """Who/what a memory belongs to (PRD §13). All optional — absence = unscoped.
+
+    ``extra="forbid"``: a typo'd key must fail loudly, not silently misfile a
+    memory outside the scope filters it belongs in.
+    """
+
+    model_config = ConfigDict(extra="forbid")
 
     user_id: str | None = None
     agent_id: str | None = None
