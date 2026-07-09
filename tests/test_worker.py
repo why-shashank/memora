@@ -22,7 +22,9 @@ async def store(migrated_db_url: str) -> AsyncIterator[PostgresStorage]:
     """A storage backend on the migrated test DB, with clean job/memory tables."""
     storage = PostgresStorage(migrated_db_url)
     async with storage.session_factory() as session:
-        await session.execute(text("TRUNCATE extraction_jobs, memories"))
+        # TRUNCATE (not DELETE) on audit_log: deliberate admin/test cleanup stays
+        # possible — the append-only trigger blocks row-level UPDATE/DELETE only
+        await session.execute(text("TRUNCATE extraction_jobs, memories, audit_log"))
         await session.commit()
     yield storage
     await storage.dispose()
@@ -159,6 +161,25 @@ async def test_process_one_threads_scope_and_actor_onto_memories(store: Postgres
             "support",
         )
         assert row.actor_type == "user_stated"
+
+
+async def test_process_one_stamps_provenance_and_audit(store: PostgresStorage) -> None:
+    job_id = await store.enqueue_extraction({"conversation": "chat", "actor_type": "user_stated"})
+
+    assert await process_one(store, StubLLM(_EXTRACTION_REPLY)) is True
+
+    async with store.session_factory() as session:
+        rows = (await session.execute(text("SELECT id, source FROM memories"))).all()
+        audit = (
+            await session.execute(text("SELECT memory_id, action, actor_type FROM audit_log"))
+        ).all()
+    # every memory points back at the exact interaction (job) that produced it...
+    assert len(rows) == 2
+    assert {row.source for row in rows} == {f"extraction:{job_id}"}
+    # ...and carries a 'created' audit entry naming the interaction's actor
+    assert {(a.memory_id, a.action, a.actor_type) for a in audit} == {
+        (row.id, "created", "user_stated") for row in rows
+    }
 
 
 async def test_process_one_defaults_scope_and_actor_when_absent(store: PostgresStorage) -> None:

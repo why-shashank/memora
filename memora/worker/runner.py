@@ -60,6 +60,9 @@ async def process_one(storage: StorageBackend, llm: LLMProvider) -> bool:
                     confidence=candidate.confidence,
                     scope=scope,
                     actor_type=actor_type,
+                    # the job row persists with its payload — this points every
+                    # memory back at the exact interaction that produced it
+                    source=f"extraction:{job.id}",
                 )
             )
         except ValidationError:

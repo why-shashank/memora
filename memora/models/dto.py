@@ -66,3 +66,6 @@ class MemoryCreate(BaseModel):
     scope: Scope = Field(default_factory=Scope)
     actor_type: ActorType = ActorType.agent
     confidence: float | None = Field(default=None, ge=0.0, le=1.0)
+    # provenance: which flow produced this memory, pointing at its originating
+    # record — "extraction:<job_id>" (M1.5); "correction:<...>" arrives with M3.1
+    source: str | None = None

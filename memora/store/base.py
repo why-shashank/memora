@@ -49,4 +49,8 @@ class StorageBackend(ABC):
 
     @abstractmethod
     async def add_memories(self, items: list[MemoryCreate]) -> list[UUID]:
-        """Persist validated memories (born as candidates); returns their ids."""
+        """Persist validated memories (born as candidates); returns their ids.
+
+        Contract: each write lands atomically with a 'created' entry in the
+        append-only audit log — no memory may exist without its audit trail.
+        """

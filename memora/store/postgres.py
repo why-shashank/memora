@@ -7,7 +7,7 @@ from sqlalchemy import select, text, update
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async_engine
 
 from memora.models import MemoryCreate
-from memora.models.orm import ExtractionJob, Memory
+from memora.models.orm import AuditLog, ExtractionJob, Memory
 from memora.store.base import ClaimedJob, StorageBackend
 
 
@@ -86,10 +86,17 @@ class PostgresStorage(StorageBackend):
                 app_id=item.scope.app_id,
                 actor_type=item.actor_type.value,
                 confidence=item.confidence,
+                source=item.source,
             )
             for item in items
         ]
         async with self.session_factory() as session:
             session.add_all(rows)
+            await session.flush()  # assigns ids so the audit rows can name them
+            session.add_all(
+                AuditLog(memory_id=row.id, action="created", actor_type=item.actor_type.value)
+                for item, row in zip(items, rows, strict=True)
+            )
+            # one commit: a memory and its audit row land together or not at all
             await session.commit()
         return [row.id for row in rows]

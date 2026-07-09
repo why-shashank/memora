@@ -68,6 +68,31 @@ class Memory(Base):
     )
 
 
+class AuditLog(Base):
+    """Append-only accountability trail — what happened to each memory record.
+
+    A DB trigger (migration 0003) rejects UPDATE/DELETE: history can't be
+    rewritten, even by our own code. Deliberately **no FK** to memories:
+    right-to-be-forgotten (M4.6) deletes the memory, but the fact that it
+    existed and was deleted must survive it.
+    """
+
+    __tablename__ = "audit_log"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()")
+    )
+    memory_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True))
+    # action vocabulary grows with the flows: created (M1.5); superseded/promoted/
+    # deleted/... land with M3/M4
+    action: Mapped[str] = mapped_column(Text)
+    actor_type: Mapped[str] = mapped_column(Text)
+    reason: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=text("now()")
+    )
+
+
 class ExtractionJob(Base):
     """Postgres-backed work queue (dev-plan §3 — async writes without Redis).
 
