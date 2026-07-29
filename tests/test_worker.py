@@ -12,7 +12,8 @@ from uuid import UUID
 import pytest
 from sqlalchemy import text
 
-from memora.providers.base import LLMProvider
+from memora.models.orm import EMBEDDING_DIM
+from memora.providers.base import EmbeddingProvider, LLMProvider
 from memora.store.postgres import PostgresStorage
 from memora.worker import MAX_ATTEMPTS, process_one, run_forever
 
@@ -38,6 +39,17 @@ class StubLLM(LLMProvider):
         self, prompt: str, *, system: str | None = None, max_tokens: int = 4096
     ) -> str:
         return self.reply
+
+
+class StubEmbedder(EmbeddingProvider):
+    """A fixed valid-dimension vector — the worker only has to persist one."""
+
+    @property
+    def dimension(self) -> int:
+        return EMBEDDING_DIM
+
+    async def embed(self, texts: list[str]) -> list[list[float]]:
+        return [[0.1] * EMBEDDING_DIM for _ in texts]
 
 
 async def _job_status(store: PostgresStorage, job_id: UUID) -> str:
@@ -95,7 +107,7 @@ _EXTRACTION_REPLY = """{"memories": [
 async def test_process_one_extracts_and_stores_candidates(store: PostgresStorage) -> None:
     job_id = await store.enqueue_extraction({"conversation": "Customer chat..."})
 
-    assert await process_one(store, StubLLM(_EXTRACTION_REPLY)) is True
+    assert await process_one(store, StubLLM(_EXTRACTION_REPLY), StubEmbedder()) is True
 
     async with store.session_factory() as session:
         rows = (
@@ -109,7 +121,7 @@ async def test_process_one_extracts_and_stores_candidates(store: PostgresStorage
 
 
 async def test_process_one_returns_false_on_empty_queue(store: PostgresStorage) -> None:
-    assert await process_one(store, StubLLM("unused")) is False
+    assert await process_one(store, StubLLM("unused"), StubEmbedder()) is False
 
 
 async def test_failed_extraction_retries_then_dead_letters(store: PostgresStorage) -> None:
@@ -117,12 +129,14 @@ async def test_failed_extraction_retries_then_dead_letters(store: PostgresStorag
     broken_llm = StubLLM("I'm sorry, I can't produce JSON today.")
 
     for _ in range(MAX_ATTEMPTS - 1):  # every failed attempt but the last requeues
-        assert await process_one(store, broken_llm) is True
+        assert await process_one(store, broken_llm, StubEmbedder()) is True
         assert await _job_status(store, job_id) == "pending"
 
-    assert await process_one(store, broken_llm) is True  # final attempt
+    assert await process_one(store, broken_llm, StubEmbedder()) is True  # final attempt
     assert await _job_status(store, job_id) == "failed"
-    assert await process_one(store, broken_llm) is False  # dead-lettered, not claimable
+    assert (
+        await process_one(store, broken_llm, StubEmbedder()) is False
+    )  # dead-lettered, not claimable
 
     async with store.session_factory() as session:
         error = (
@@ -144,7 +158,7 @@ async def test_process_one_threads_scope_and_actor_onto_memories(store: Postgres
         }
     )
 
-    assert await process_one(store, StubLLM(_EXTRACTION_REPLY)) is True
+    assert await process_one(store, StubLLM(_EXTRACTION_REPLY), StubEmbedder()) is True
 
     async with store.session_factory() as session:
         rows = (
@@ -166,7 +180,7 @@ async def test_process_one_threads_scope_and_actor_onto_memories(store: Postgres
 async def test_process_one_stamps_provenance_and_audit(store: PostgresStorage) -> None:
     job_id = await store.enqueue_extraction({"conversation": "chat", "actor_type": "user_stated"})
 
-    assert await process_one(store, StubLLM(_EXTRACTION_REPLY)) is True
+    assert await process_one(store, StubLLM(_EXTRACTION_REPLY), StubEmbedder()) is True
 
     async with store.session_factory() as session:
         rows = (await session.execute(text("SELECT id, source FROM memories"))).all()
@@ -186,7 +200,7 @@ async def test_process_one_defaults_scope_and_actor_when_absent(store: PostgresS
     # a payload without attribution (M1.3-era shape) still processes: unscoped, agent actor
     await store.enqueue_extraction({"conversation": "chat"})
 
-    assert await process_one(store, StubLLM(_EXTRACTION_REPLY)) is True
+    assert await process_one(store, StubLLM(_EXTRACTION_REPLY), StubEmbedder()) is True
 
     async with store.session_factory() as session:
         rows = (
@@ -208,7 +222,7 @@ async def test_worker_loop_survives_unexpected_errors(store: PostgresStorage) ->
 
     await store.enqueue_extraction({"conversation": "boom"})
 
-    loop_task = asyncio.create_task(run_forever(store, ExplodingLLM()))
+    loop_task = asyncio.create_task(run_forever(store, ExplodingLLM(), StubEmbedder()))
     await asyncio.sleep(0.3)  # long enough for at least one claim → explode cycle
     try:
         assert not loop_task.done(), loop_task.exception()
@@ -224,9 +238,26 @@ async def test_invalid_candidate_is_dropped_not_fatal(store: PostgresStorage) ->
     ]}"""
     job_id = await store.enqueue_extraction({"conversation": "chat"})
 
-    assert await process_one(store, StubLLM(reply)) is True
+    assert await process_one(store, StubLLM(reply), StubEmbedder()) is True
 
     async with store.session_factory() as session:
         contents = (await session.execute(text("SELECT content FROM memories"))).scalars().all()
     assert contents == ["Wants monthly summaries."]
     assert await _job_status(store, job_id) == "done"
+
+
+async def test_process_one_embeds_memories_on_write(store: PostgresStorage) -> None:
+    # embed-on-write (deferred here from M1.3): retrieval's vector leg needs a
+    # populated embedding column, so every stored candidate is embedded as it lands
+    await store.enqueue_extraction({"conversation": "chat"})
+
+    assert await process_one(store, StubLLM(_EXTRACTION_REPLY), StubEmbedder()) is True
+
+    async with store.session_factory() as session:
+        dims = (
+            (await session.execute(text("SELECT vector_dims(embedding) FROM memories")))
+            .scalars()
+            .all()
+        )
+    # both candidates carry a full-dimension vector (NULL → vector_dims NULL → fails)
+    assert dims == [EMBEDDING_DIM, EMBEDDING_DIM]

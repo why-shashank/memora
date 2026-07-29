@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from typing import Any
 from uuid import UUID
 
-from memora.models import MemoryCreate
+from memora.models import MemoryCreate, Scope
 
 
 @dataclass(frozen=True)
@@ -15,6 +15,16 @@ class ClaimedJob:
     id: UUID
     payload: dict[str, Any]
     attempts: int
+
+
+@dataclass(frozen=True)
+class RetrievedMemory:
+    """A memory returned by hybrid search, with its fused relevance score."""
+
+    id: UUID
+    content: str
+    type: str
+    score: float
 
 
 class StorageBackend(ABC):
@@ -48,9 +58,29 @@ class StorageBackend(ABC):
         """Record a failed attempt: back to the queue (retry) or dead-lettered."""
 
     @abstractmethod
-    async def add_memories(self, items: list[MemoryCreate]) -> list[UUID]:
+    async def add_memories(
+        self, items: list[MemoryCreate], embeddings: list[list[float]] | None = None
+    ) -> list[UUID]:
         """Persist validated memories (born as candidates); returns their ids.
 
         Contract: each write lands atomically with a 'created' entry in the
         append-only audit log — no memory may exist without its audit trail.
+
+        ``embeddings`` (when given) must align 1:1 with ``items`` — the vector
+        for retrieval's semantic leg. Omitted, memories store no embedding.
+        """
+
+    @abstractmethod
+    async def hybrid_search(
+        self,
+        *,
+        query_embedding: list[float],
+        query_text: str,
+        scope: Scope,
+        limit: int = 10,
+    ) -> list[RetrievedMemory]:
+        """Vector (cosine) + FTS legs fused with RRF; scope-filtered, best first.
+
+        Built as a fusion of independent legs so a third (entities, M2.8) can be
+        added without disturbing the two shipping here.
         """
