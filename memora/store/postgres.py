@@ -27,7 +27,7 @@ WITH q AS (
     SELECT replace(plainto_tsquery('english', :query_text)::text, ' & ', ' | ')::tsquery AS query
 ),
 scoped AS (
-    SELECT id, content, type, embedding, content_tsv
+    SELECT id, content, type, actor_type, confidence, embedding, content_tsv
     FROM memories
     WHERE TRUE {scope_where}
 ),
@@ -52,11 +52,10 @@ fused AS (
     FROM vector_hits v
     FULL OUTER JOIN fts_hits f ON v.id = f.id
 )
-SELECT scoped.id, scoped.content, scoped.type, fused.score
+SELECT scoped.id, scoped.content, scoped.type, scoped.actor_type, scoped.confidence, fused.score
 FROM fused
 JOIN scoped ON scoped.id = fused.id
 ORDER BY fused.score DESC, scoped.id
-LIMIT :limit
 """
 
 
@@ -167,14 +166,12 @@ class PostgresStorage(StorageBackend):
         query_embedding: list[float],
         query_text: str,
         scope: Scope,
-        limit: int = 10,
     ) -> list[RetrievedMemory]:
         params: dict[str, Any] = {
             "query_text": query_text,
             "query_embedding": _vector_literal(query_embedding),
             "pool": _POOL,
             "k": _RRF_K,
-            "limit": limit,
         }
         # only non-None scope fields filter; column names are fixed literals, so
         # composing them into the SQL is safe — the values still bind as params
@@ -189,6 +186,13 @@ class PostgresStorage(StorageBackend):
         async with self.session_factory() as session:
             rows = (await session.execute(stmt, params)).all()
         return [
-            RetrievedMemory(id=row.id, content=row.content, type=row.type, score=float(row.score))
+            RetrievedMemory(
+                id=row.id,
+                content=row.content,
+                type=row.type,
+                actor_type=row.actor_type,
+                confidence=row.confidence,
+                score=float(row.score),
+            )
             for row in rows
         ]

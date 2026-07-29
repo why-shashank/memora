@@ -19,11 +19,19 @@ class ClaimedJob:
 
 @dataclass(frozen=True)
 class RetrievedMemory:
-    """A memory returned by hybrid search, with its fused relevance score."""
+    """A memory returned by retrieval.
+
+    ``score`` is the RRF relevance out of ``hybrid_search`` and is rewritten to the
+    effective (trust-weighted) score by the scoring stage. ``actor_type`` and
+    ``confidence`` are carried so that stage — and provenance-on-retrieval (M4.5) —
+    can weigh who vouched for the memory and how sure it is.
+    """
 
     id: UUID
     content: str
     type: str
+    actor_type: str | None
+    confidence: float | None
     score: float
 
 
@@ -77,10 +85,11 @@ class StorageBackend(ABC):
         query_embedding: list[float],
         query_text: str,
         scope: Scope,
-        limit: int = 10,
     ) -> list[RetrievedMemory]:
-        """Vector (cosine) + FTS legs fused with RRF; scope-filtered, best first.
+        """Vector (cosine) + FTS legs fused with RRF; scope-filtered, RRF-ordered.
 
-        Built as a fusion of independent legs so a third (entities, M2.8) can be
-        added without disturbing the two shipping here.
+        Returns the whole fused candidate pool, not a final top-N: trust weighting
+        (M2.2) reorders these before the caller truncates, so a trusted memory below
+        the output limit must still reach the scorer. Built as a fusion of independent
+        legs so a third (entities, M2.8) can be added without disturbing these two.
         """

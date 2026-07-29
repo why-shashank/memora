@@ -6,6 +6,7 @@ one model call here is the thing to watch; the fusion itself is a single query.
 
 from memora.models import Scope
 from memora.providers.base import EmbeddingProvider
+from memora.retrieval.scoring import rank
 from memora.store.base import RetrievedMemory, StorageBackend
 
 
@@ -17,11 +18,15 @@ async def retrieve(
     scope: Scope | None = None,
     limit: int = 10,
 ) -> list[RetrievedMemory]:
-    """Return memories most relevant to ``query``, RRF-fused and scope-filtered."""
+    """Memories most relevant to ``query``: RRF-fused, scope-filtered, trust-weighted.
+
+    The store returns the whole fused pool; weighting reorders it before the top-``limit``
+    cut, so a trusted memory ranked below ``limit`` on pure relevance can still surface.
+    """
     [query_embedding] = await embedder.embed([query])
-    return await storage.hybrid_search(
+    candidates = await storage.hybrid_search(
         query_embedding=query_embedding,
         query_text=query,
         scope=scope or Scope(),
-        limit=limit,
     )
+    return rank(candidates)[:limit]

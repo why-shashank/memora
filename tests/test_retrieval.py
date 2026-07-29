@@ -1,4 +1,5 @@
 """M2.1 — hybrid retrieval: vector + FTS legs fused with RRF, scope-filtered.
+M2.2 — effective-confidence weighting: trust + type float above raw relevance.
 
 The vector space is stubbed with deterministic literals so these tests exercise
 the fusion SQL and ranking behaviour, not embedding quality — S2 already
@@ -14,6 +15,7 @@ from memora.models import MemoryCreate, Scope
 from memora.models.orm import EMBEDDING_DIM
 from memora.providers.base import EmbeddingProvider
 from memora.retrieval import retrieve
+from memora.retrieval.scoring import effective_confidence
 from memora.store.postgres import PostgresStorage
 
 
@@ -36,6 +38,7 @@ def _vec(x: float, y: float = 0.0) -> list[float]:
 
 
 _NEAR = _vec(1.0)  # aligned with the query vector → smallest cosine distance
+_NEARISH = _vec(1.0, 0.2)  # slightly off-axis → a shade farther, so ranks are deterministic
 _FAR = _vec(-1.0)  # opposite the query vector → largest cosine distance
 
 
@@ -54,10 +57,25 @@ class StubEmbedder(EmbeddingProvider):
 
 
 async def _add(
-    store: PostgresStorage, content: str, embedding: list[float], *, scope: Scope | None = None
+    store: PostgresStorage,
+    content: str,
+    embedding: list[float],
+    *,
+    memory_type: str = "entity_fact",
+    actor_type: str = "agent",
+    confidence: float | None = None,
+    scope: Scope | None = None,
 ) -> object:
     (memory_id,) = await store.add_memories(
-        [MemoryCreate(content=content, type="entity_fact", scope=scope or Scope())],
+        [
+            MemoryCreate(
+                content=content,
+                type=memory_type,
+                actor_type=actor_type,
+                confidence=confidence,
+                scope=scope or Scope(),
+            )
+        ],
         embeddings=[embedding],
     )
     return memory_id
@@ -97,3 +115,48 @@ async def test_scope_filter_restricts_results_to_the_query_scope(
     results = await retrieve(store, StubEmbedder(_NEAR), "refund", scope=Scope(user_id="u-1"))
 
     assert [r.id for r in results] == [mine]  # the other user's memory is invisible
+
+
+# --- M2.2: effective-confidence weighting ---
+
+
+def test_effective_confidence_combines_confidence_and_actor_trust() -> None:
+    # a human-vouched memory outweighs an agent-inferred one at equal confidence
+    assert effective_confidence(0.9, "human_correction") > effective_confidence(0.9, "agent")
+    # no confidence = an assertion (correction/review), taken at full confidence, not penalised
+    assert effective_confidence(None, "human_correction") == effective_confidence(
+        1.0, "human_correction"
+    )
+    # confidence scales it: a hedged inference ranks below a confident one, same actor
+    assert effective_confidence(0.3, "agent") < effective_confidence(0.9, "agent")
+
+
+async def test_correction_floats_above_an_ordinary_fact_of_similar_relevance(
+    store: PostgresStorage,
+) -> None:
+    # the fact is the nearer vector neighbour, so pure relevance ranks it first; the
+    # correction's type priority + human-actor trust must float it to the top instead
+    await _add(store, "Refund policy is thirty days", _NEAR, memory_type="entity_fact")
+    correction = await _add(
+        store,
+        "Refund policy is thirty days",
+        _NEARISH,
+        memory_type="correction",
+        actor_type="human_correction",
+    )
+
+    results = await retrieve(store, StubEmbedder(_NEAR), "refund policy")
+
+    assert results[0].id == correction
+
+
+async def test_higher_confidence_outranks_lower_confidence_at_equal_trust(
+    store: PostgresStorage,
+) -> None:
+    # same type + actor; the more-confident memory wins even from the farther rank
+    await _add(store, "Ships on the Growth plan", _NEAR, confidence=0.3)
+    confident = await _add(store, "Ships on the Growth plan", _NEARISH, confidence=0.9)
+
+    results = await retrieve(store, StubEmbedder(_NEAR), "Growth plan")
+
+    assert results[0].id == confident
