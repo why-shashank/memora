@@ -1,7 +1,7 @@
 """Golden-set eval runner (M2.5) — measure retrieval instead of arguing about it.
 
-    uv run python -m evals.runner                  # production path: RRF + weighting
-    uv run python -m evals.runner --variant rrf    # baseline: fusion only, no weighting
+    uv run python -m evals.runner                  # the production retrieval path
+    uv run python -m evals.runner --variant rrf    # baseline: raw fusion, pipeline bypassed
 
 Seeds a *throwaway* pgvector container, so a run can never touch a real deployment's data
 and two runs of the same commit give the same answer. Embeddings come from the configured
@@ -45,7 +45,8 @@ async def _search(
     limit: int,
 ) -> list[RetrievedMemory]:
     if variant == "rrf":
-        # pure fusion, weighting skipped — the baseline M2.2's constants have to beat
+        # raw fusion straight out of the store, pipeline bypassed — the baseline any ranking
+        # stage has to beat. It is what retired M2.2's weighting in M2.5a.
         [vector] = await embedder.embed([query])
         candidates = await store.hybrid_search(
             query_embedding=vector, query_text=query, scope=scope
@@ -137,9 +138,9 @@ def main() -> None:
     parser.add_argument("--queries", type=Path, default=GOLDEN / "queries.json")
     parser.add_argument(
         "--variant",
-        choices=("weighted", "rrf"),
-        default="weighted",
-        help="weighted = the production path; rrf = fusion only, for comparison",
+        choices=("pipeline", "rrf"),
+        default="pipeline",
+        help="pipeline = the production retrieval path; rrf = raw fusion, for comparison",
     )
     parser.add_argument("--limit", type=int, default=max(K_VALUES))
     args = parser.parse_args()

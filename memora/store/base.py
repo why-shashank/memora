@@ -21,10 +21,10 @@ class ClaimedJob:
 class RetrievedMemory:
     """A memory returned by retrieval.
 
-    ``score`` is the RRF relevance out of ``hybrid_search`` and is rewritten to the
-    effective (trust-weighted) score by the scoring stage. ``actor_type`` and
-    ``confidence`` are carried so that stage — and provenance-on-retrieval (M4.5) —
-    can weigh who vouched for the memory and how sure it is.
+    ``score`` is the RRF relevance out of ``hybrid_search``; a reranker may rewrite it.
+    ``actor_type`` and ``confidence`` travel with the memory so a caller can see who
+    vouched for it and how sure it was (M2.4's search response, provenance-on-retrieval
+    in M4.5) — they no longer influence ranking itself, see `retrieval/pipeline.py`.
     """
 
     id: UUID

@@ -1,7 +1,11 @@
 """M2.1 — hybrid retrieval: vector + FTS legs fused with RRF, scope-filtered.
-M2.2 — effective-confidence weighting: trust + type float above raw relevance.
 M2.3 — rerank hook: a supplied reranker has the final say on order.
 M2.4 — per-phase spans so a slow retrieval says which phase was slow.
+M2.5a — ordering is relevance alone; trust must not override it.
+
+M2.2's trust/type weighting stage was removed in M2.5a after the eval harness measured it as
+worse than no stage at any strength, so its three tests went with it — they encoded the
+behaviour that turned out to be wrong. See `retrieval/pipeline.py` for the finding.
 
 The vector space is stubbed with deterministic literals so these tests exercise
 the fusion SQL and ranking behaviour, not embedding quality — S2 already
@@ -22,7 +26,6 @@ from memora.models.orm import EMBEDDING_DIM
 from memora.providers.base import EmbeddingProvider
 from memora.retrieval import retrieve
 from memora.retrieval.rerank import Reranker
-from memora.retrieval.scoring import effective_confidence
 from memora.store.base import RetrievedMemory
 from memora.store.postgres import PostgresStorage
 
@@ -46,7 +49,6 @@ def _vec(x: float, y: float = 0.0) -> list[float]:
 
 
 _NEAR = _vec(1.0)  # aligned with the query vector → smallest cosine distance
-_NEARISH = _vec(1.0, 0.2)  # slightly off-axis → a shade farther, so ranks are deterministic
 _FAR = _vec(-1.0)  # opposite the query vector → largest cosine distance
 
 
@@ -125,51 +127,6 @@ async def test_scope_filter_restricts_results_to_the_query_scope(
     assert [r.id for r in results] == [mine]  # the other user's memory is invisible
 
 
-# --- M2.2: effective-confidence weighting ---
-
-
-def test_effective_confidence_combines_confidence_and_actor_trust() -> None:
-    # a human-vouched memory outweighs an agent-inferred one at equal confidence
-    assert effective_confidence(0.9, "human_correction") > effective_confidence(0.9, "agent")
-    # no confidence = an assertion (correction/review), taken at full confidence, not penalised
-    assert effective_confidence(None, "human_correction") == effective_confidence(
-        1.0, "human_correction"
-    )
-    # confidence scales it: a hedged inference ranks below a confident one, same actor
-    assert effective_confidence(0.3, "agent") < effective_confidence(0.9, "agent")
-
-
-async def test_correction_floats_above_an_ordinary_fact_of_similar_relevance(
-    store: PostgresStorage,
-) -> None:
-    # the fact is the nearer vector neighbour, so pure relevance ranks it first; the
-    # correction's type priority + human-actor trust must float it to the top instead
-    await _add(store, "Refund policy is thirty days", _NEAR, memory_type="entity_fact")
-    correction = await _add(
-        store,
-        "Refund policy is thirty days",
-        _NEARISH,
-        memory_type="correction",
-        actor_type="human_correction",
-    )
-
-    results = await retrieve(store, StubEmbedder(_NEAR), "refund policy")
-
-    assert results[0].id == correction
-
-
-async def test_higher_confidence_outranks_lower_confidence_at_equal_trust(
-    store: PostgresStorage,
-) -> None:
-    # same type + actor; the more-confident memory wins even from the farther rank
-    await _add(store, "Ships on the Growth plan", _NEAR, confidence=0.3)
-    confident = await _add(store, "Ships on the Growth plan", _NEARISH, confidence=0.9)
-
-    results = await retrieve(store, StubEmbedder(_NEAR), "Growth plan")
-
-    assert results[0].id == confident
-
-
 # --- M2.3: rerank hook ---
 
 
@@ -205,6 +162,31 @@ async def test_reranker_sees_the_whole_pool_before_the_limit_cut(
     )
 
     assert [r.id for r in results] == [ranked_last]
+
+
+# --- M2.5a: trust does not override relevance ---
+
+
+async def test_a_trusted_correction_cannot_displace_a_far_more_relevant_memory(
+    store: PostgresStorage,
+) -> None:
+    # the golden-set failure in miniature, kept as the guard against reintroducing it. The
+    # answer wins *both* legs — roughly twice the RRF of a single-leg hit, the widest gap the
+    # pool produces — while carrying the weakest possible trust (agent, hedged); the
+    # correction wins one leg and carries the strongest. This failed against M2.2's weighting,
+    # and fails again the moment anything reorders the pool on a memory's own attributes.
+    answer = await _add(store, "Refund window is thirty days", _NEAR, confidence=0.5)
+    await _add(
+        store,
+        "The sky was clear tonight",
+        _FAR,
+        memory_type="correction",
+        actor_type="human_correction",
+    )
+
+    results = await retrieve(store, StubEmbedder(_NEAR), "refund")
+
+    assert results[0].id == answer
 
 
 # --- M2.4: per-phase latency attribution ---
