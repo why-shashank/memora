@@ -60,6 +60,7 @@ packages = ["memora"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+pythonpath = ["."]  # so tests can import the eval harness, which lives outside the package
 
 [tool.ruff]
 line-length = 100

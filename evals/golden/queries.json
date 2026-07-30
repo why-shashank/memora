@@ -1,0 +1,26 @@
+[
+  {"category": "exact_term", "query": "account number BR-88214", "user_id": null, "expected_id": "a01"},
+  {"category": "exact_term", "query": "Which customer has billing account BR-51330?", "user_id": null, "expected_id": "c01"},
+  {"category": "exact_term", "query": "BR-93518", "user_id": null, "expected_id": "e01"},
+  {"category": "exact_term", "query": "who signs in through Okta", "user_id": null, "expected_id": "a04"},
+
+  {"category": "semantic", "query": "How should we get in touch with Dana?", "user_id": "acme", "expected_id": "a03"},
+  {"category": "semantic", "query": "When can Nimbus safely ship a release?", "user_id": "nimbus", "expected_id": "b04"},
+  {"category": "semantic", "query": "Where is Kestrel Labs allowed to keep its data?", "user_id": "kestrel", "expected_id": "d03"},
+  {"category": "semantic", "query": "How does Harbor Foods settle their bill?", "user_id": "harbor", "expected_id": "e02"},
+  {"category": "semantic", "query": "Why might Orchid Health struggle to tell their users apart?", "user_id": "orchid", "expected_id": "f04"},
+
+  {"category": "scoped", "query": "What is the billing account number?", "user_id": "acme", "expected_id": "a01"},
+  {"category": "scoped", "query": "What is the billing account number?", "user_id": "nimbus", "expected_id": "b01"},
+  {"category": "scoped", "query": "What is the billing account number?", "user_id": "fieldworks", "expected_id": "c01"},
+  {"category": "scoped", "query": "What is the billing account number?", "user_id": "harbor", "expected_id": "e01"},
+
+  {"category": "policy", "query": "Can a customer get their money back two months after buying?", "user_id": null, "expected_id": "p01"},
+  {"category": "policy", "query": "How quickly do we have to answer an enterprise customer?", "user_id": null, "expected_id": "p02"},
+  {"category": "policy", "query": "A customer on chat wants me to confirm where they are billed — what do I do?", "user_id": null, "expected_id": "p03"},
+  {"category": "policy", "query": "Should I wake the on-call engineer for a minor issue on Saturday?", "user_id": null, "expected_id": "p04"},
+
+  {"category": "correction", "query": "How should FieldWorks import their customer records?", "user_id": "fieldworks", "expected_id": "c02"},
+  {"category": "correction", "query": "Can we give Nimbus Retail a refund for the outage?", "user_id": "nimbus", "expected_id": "b03"},
+  {"category": "correction", "query": "Does Kestrel Labs still get the startup discount?", "user_id": "kestrel", "expected_id": "d02"}
+]

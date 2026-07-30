@@ -1,0 +1,153 @@
+"""Golden-set eval runner (M2.5) — measure retrieval instead of arguing about it.
+
+    uv run python -m evals.runner                  # production path: RRF + weighting
+    uv run python -m evals.runner --variant rrf    # baseline: fusion only, no weighting
+
+Seeds a *throwaway* pgvector container, so a run can never touch a real deployment's data
+and two runs of the same commit give the same answer. Embeddings come from the configured
+model, because relevance is a property of the model and the SQL together — stubbing the
+model here would measure nothing worth knowing.
+
+dev-plan §10 wants this run on every meaningful change from M2 onward: it is the thing
+that stops M2.6–M2.8's entity layer from being added on faith.
+"""
+
+import argparse
+import asyncio
+import json
+import time
+from pathlib import Path
+from typing import Any
+
+from alembic import command
+from alembic.config import Config
+from testcontainers.postgres import PostgresContainer
+
+from evals.metrics import QueryResult, Summary, summarize
+from memora.config import Settings
+from memora.models import ActorType, MemoryCreate, MemoryType, Scope
+from memora.providers import get_embedding_provider
+from memora.providers.base import EmbeddingProvider
+from memora.retrieval import retrieve
+from memora.store.base import RetrievedMemory
+from memora.store.postgres import PostgresStorage
+
+GOLDEN = Path(__file__).parent / "golden"
+K_VALUES = (1, 3, 5)
+
+
+async def _search(
+    store: PostgresStorage,
+    embedder: EmbeddingProvider,
+    query: str,
+    scope: Scope,
+    variant: str,
+    limit: int,
+) -> list[RetrievedMemory]:
+    if variant == "rrf":
+        # pure fusion, weighting skipped — the baseline M2.2's constants have to beat
+        [vector] = await embedder.embed([query])
+        candidates = await store.hybrid_search(
+            query_embedding=vector, query_text=query, scope=scope
+        )
+        return candidates[:limit]
+    return await retrieve(store, embedder, query, scope=scope, limit=limit)
+
+
+def run(corpus_path: Path, queries_path: Path, variant: str, limit: int) -> list[QueryResult]:
+    """Spin up a throwaway migrated Postgres, then measure inside it.
+
+    Sync on purpose: alembic's env.py calls `asyncio.run` itself, so migrations have to
+    happen before an event loop exists.
+    """
+    corpus = json.loads(corpus_path.read_text())
+    queries = json.loads(queries_path.read_text())
+
+    with PostgresContainer("pgvector/pgvector:pg16", driver="asyncpg") as pg:
+        url = pg.get_connection_url()
+        config = Config("alembic.ini")
+        config.set_main_option("sqlalchemy.url", url)
+        command.upgrade(config, "head")
+        return asyncio.run(_measure(url, corpus, queries, variant, limit))
+
+
+async def _measure(
+    url: str,
+    corpus: list[dict[str, Any]],
+    queries: list[dict[str, Any]],
+    variant: str,
+    limit: int,
+) -> list[QueryResult]:
+    embedder = get_embedding_provider(Settings())
+    store = PostgresStorage(url)
+    try:
+        # the enums are constructed explicitly so a typo in the golden set fails loudly
+        # here rather than quietly changing what the run measures
+        items = [
+            MemoryCreate(
+                content=m["content"],
+                type=MemoryType(m["type"]),
+                actor_type=ActorType(m.get("actor_type", "agent")),
+                confidence=m.get("confidence"),
+                scope=Scope(user_id=m.get("user_id")),
+            )
+            for m in corpus
+        ]
+        vectors = await embedder.embed([m["content"] for m in corpus])
+        stored_ids = await store.add_memories(items, embeddings=vectors)
+        # retrieval speaks in UUIDs; the golden set speaks in stable labels like "a01"
+        label = {stored: m["id"] for stored, m in zip(stored_ids, corpus, strict=True)}
+
+        results = []
+        for q in queries:
+            scope = Scope(user_id=q.get("user_id"))
+            started = time.perf_counter()
+            hits = await _search(store, embedder, q["query"], scope, variant, limit)
+            results.append(
+                QueryResult(
+                    category=q["category"],
+                    expected_id=q["expected_id"],
+                    retrieved_ids=[label[h.id] for h in hits],
+                    latency_s=time.perf_counter() - started,
+                )
+            )
+        return results
+    finally:
+        await store.dispose()
+
+
+def print_report(summaries: dict[str, Summary], results: list[QueryResult]) -> None:
+    header = f"{'category':<12}{'queries':>8}" + "".join(f"{f'hit@{k}':>8}" for k in K_VALUES)
+    print(f"\n{header}{'MRR':>8}{'p95 s':>8}")
+    print("-" * len(f"{header}{'MRR':>8}{'p95 s':>8}"))
+    for name, s in summaries.items():
+        scores = "".join(f"{s.hit_at_k[k]:>8.2f}" for k in K_VALUES)
+        print(f"{name:<12}{s.queries:>8}{scores}{s.mrr:>8.2f}{s.p95_latency_s:>8.3f}")
+
+    misses = [r for r in results if r.expected_id not in r.retrieved_ids[: max(K_VALUES)]]
+    if misses:
+        print(f"\n{len(misses)} miss(es) — the only rows worth reading closely:")
+        for r in misses:
+            print(f"  [{r.category}] expected {r.expected_id}, got {r.retrieved_ids}")
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--corpus", type=Path, default=GOLDEN / "memories.json")
+    parser.add_argument("--queries", type=Path, default=GOLDEN / "queries.json")
+    parser.add_argument(
+        "--variant",
+        choices=("weighted", "rrf"),
+        default="weighted",
+        help="weighted = the production path; rrf = fusion only, for comparison",
+    )
+    parser.add_argument("--limit", type=int, default=max(K_VALUES))
+    args = parser.parse_args()
+
+    results = run(args.corpus, args.queries, args.variant, args.limit)
+    print(f"\nvariant={args.variant} corpus={args.corpus.name} queries={len(results)}")
+    print_report(summarize(results, k_values=K_VALUES), results)
+
+
+if __name__ == "__main__":
+    main()
