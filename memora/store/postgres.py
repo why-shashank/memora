@@ -16,35 +16,43 @@ from memora.store.base import ClaimedJob, RetrievedMemory, StorageBackend
 _RRF_K = 60
 _POOL = 20
 
-# The hybrid query: two independent ranked legs (vector, FTS) over the same
-# scope-filtered set, fused by RRF. {scope_where} is composed from fixed column
-# names (never user input); all values bind as parameters. A third leg (entity
-# traversal, M2.8) slots in as another CTE + COALESCE term without touching these.
+# The hybrid query: two independent ranked legs (vector, FTS) fused by RRF.
+# {scope_where} is composed from fixed column names (never user input); all values
+# bind as parameters.
+#
+# Each leg's ORDER BY ... LIMIT must sit DIRECTLY ON `memories`. Factoring the
+# scope-filtered set into a shared CTE reads better, but Postgres materialises any
+# CTE referenced more than once: the legs then scan that copy, where the HNSW and
+# GIN indexes are unreachable, and the vector leg silently degrades to sorting every
+# row in the table (measured at 20K rows: 25.4ms -> 8.6ms once the legs reach the
+# index, vector leg 7.7ms -> 0.9ms, and the bad shape grows linearly with corpus
+# size). The entity leg (M2.8) must follow the same shape: its own subquery on the
+# base table plus one more COALESCE term in `fused`.
 _HYBRID_SQL = """
 WITH q AS (
     -- S2 found FTS needs OR-semantics (any term may match), so turn plainto's
     -- AND-joined lexemes into an OR query, keeping stemming + stopword removal.
     SELECT replace(plainto_tsquery('english', :query_text)::text, ' & ', ' | ')::tsquery AS query
 ),
-scoped AS (
-    SELECT id, content, type, actor_type, confidence, embedding, content_tsv
-    FROM memories
-    WHERE TRUE {scope_where}
-),
 vector_hits AS (
-    SELECT id, ROW_NUMBER() OVER (ORDER BY embedding <=> CAST(:query_embedding AS vector)) AS rank
-    FROM scoped
-    WHERE embedding IS NOT NULL
-    ORDER BY embedding <=> CAST(:query_embedding AS vector)
-    LIMIT :pool
+    SELECT id, ROW_NUMBER() OVER (ORDER BY distance) AS rank
+    FROM (
+        SELECT id, embedding <=> CAST(:query_embedding AS vector) AS distance
+        FROM memories
+        WHERE embedding IS NOT NULL {scope_where}
+        ORDER BY embedding <=> CAST(:query_embedding AS vector)
+        LIMIT :pool
+    ) nearest
 ),
 fts_hits AS (
-    SELECT scoped.id,
-           ROW_NUMBER() OVER (ORDER BY ts_rank_cd(scoped.content_tsv, q.query) DESC) AS rank
-    FROM scoped, q
-    WHERE scoped.content_tsv @@ q.query
-    ORDER BY ts_rank_cd(scoped.content_tsv, q.query) DESC
-    LIMIT :pool
+    SELECT id, ROW_NUMBER() OVER (ORDER BY relevance DESC) AS rank
+    FROM (
+        SELECT memories.id, ts_rank_cd(memories.content_tsv, q.query) AS relevance
+        FROM memories, q
+        WHERE memories.content_tsv @@ q.query {scope_where}
+        ORDER BY ts_rank_cd(memories.content_tsv, q.query) DESC
+        LIMIT :pool
+    ) matched
 ),
 fused AS (
     SELECT COALESCE(v.id, f.id) AS id,
@@ -52,10 +60,11 @@ fused AS (
     FROM vector_hits v
     FULL OUTER JOIN fts_hits f ON v.id = f.id
 )
-SELECT scoped.id, scoped.content, scoped.type, scoped.actor_type, scoped.confidence, fused.score
+SELECT memories.id, memories.content, memories.type,
+       memories.actor_type, memories.confidence, fused.score
 FROM fused
-JOIN scoped ON scoped.id = fused.id
-ORDER BY fused.score DESC, scoped.id
+JOIN memories ON memories.id = fused.id
+ORDER BY fused.score DESC, memories.id
 """
 
 
