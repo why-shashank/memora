@@ -1,15 +1,20 @@
 """M2.1 — hybrid retrieval: vector + FTS legs fused with RRF, scope-filtered.
 M2.2 — effective-confidence weighting: trust + type float above raw relevance.
 M2.3 — rerank hook: a supplied reranker has the final say on order.
+M2.4 — per-phase spans so a slow retrieval says which phase was slow.
 
 The vector space is stubbed with deterministic literals so these tests exercise
 the fusion SQL and ranking behaviour, not embedding quality — S2 already
 validated relevance against a real model.
 """
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterator
 
 import pytest
+from opentelemetry import trace
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 from sqlalchemy import text
 
 from memora.models import MemoryCreate, Scope
@@ -200,3 +205,43 @@ async def test_reranker_sees_the_whole_pool_before_the_limit_cut(
     )
 
     assert [r.id for r in results] == [ranked_last]
+
+
+# --- M2.4: per-phase latency attribution ---
+
+
+@pytest.fixture
+def spans() -> Iterator[InMemorySpanExporter]:
+    """Capture emitted spans. Attaches to the SDK provider if an app already installed one
+    (the global provider can only be set once per process), else installs one."""
+    provider = trace.get_tracer_provider()
+    if not isinstance(provider, TracerProvider):
+        provider = TracerProvider()
+        trace.set_tracer_provider(provider)
+    exporter = InMemorySpanExporter()
+    processor = SimpleSpanProcessor(exporter)
+    provider.add_span_processor(processor)
+    yield exporter
+    processor.shutdown()
+
+
+async def test_retrieve_attributes_latency_to_each_phase(
+    store: PostgresStorage, spans: InMemorySpanExporter
+) -> None:
+    # S3 found the embedding call, not Postgres, is the bottleneck under load — which is
+    # only actionable if a slow retrieval says *which* phase was slow.
+    await _add(store, "Refund window is thirty days", _NEAR)
+    await _add(store, "Prefers aisle seats", _FAR)
+
+    await retrieve(store, StubEmbedder(_NEAR), "refund window")
+
+    emitted = {span.name: span for span in spans.get_finished_spans()}
+    assert {"memora.retrieve.embed", "memora.retrieve.search", "memora.retrieve.rank"} <= set(
+        emitted
+    )
+    parent = emitted["memora.retrieve"]
+    assert parent.attributes is not None
+    assert parent.attributes["memora.results"] == 2
+    assert parent.attributes["memora.query_chars"] == len("refund window")
+    # the raw query is deliberately absent: traces leave the deployment, queries hold user data
+    assert not any("refund" in str(value) for value in parent.attributes.values())
