@@ -1,5 +1,6 @@
 """M2.1 — hybrid retrieval: vector + FTS legs fused with RRF, scope-filtered.
 M2.2 — effective-confidence weighting: trust + type float above raw relevance.
+M2.3 — rerank hook: a supplied reranker has the final say on order.
 
 The vector space is stubbed with deterministic literals so these tests exercise
 the fusion SQL and ranking behaviour, not embedding quality — S2 already
@@ -15,7 +16,9 @@ from memora.models import MemoryCreate, Scope
 from memora.models.orm import EMBEDDING_DIM
 from memora.providers.base import EmbeddingProvider
 from memora.retrieval import retrieve
+from memora.retrieval.rerank import Reranker
 from memora.retrieval.scoring import effective_confidence
+from memora.store.base import RetrievedMemory
 from memora.store.postgres import PostgresStorage
 
 
@@ -160,3 +163,40 @@ async def test_higher_confidence_outranks_lower_confidence_at_equal_trust(
     results = await retrieve(store, StubEmbedder(_NEAR), "Growth plan")
 
     assert results[0].id == confident
+
+
+# --- M2.3: rerank hook ---
+
+
+class ReversingReranker(Reranker):
+    """Stands in for a second-stage model by inverting the order it is handed —
+    an ordering no relevance signal in the pipeline would produce on its own."""
+
+    async def rerank(self, query: str, candidates: list[RetrievedMemory]) -> list[RetrievedMemory]:
+        return list(reversed(candidates))
+
+
+async def test_reranker_has_the_final_say_on_order(store: PostgresStorage) -> None:
+    await _add(store, "Customer requested a refund", _FAR)
+    await _add(store, "The sky was clear tonight", _NEAR)
+
+    weighted = await retrieve(store, StubEmbedder(_NEAR), "refund")
+    reranked = await retrieve(store, StubEmbedder(_NEAR), "refund", reranker=ReversingReranker())
+
+    assert len(weighted) == 2  # else reversing proves nothing
+    assert [r.id for r in reranked] == [r.id for r in reversed(weighted)]
+
+
+async def test_reranker_sees_the_whole_pool_before_the_limit_cut(
+    store: PostgresStorage,
+) -> None:
+    # the lexical+vector hit outranks the vector-only one (fusion), so the latter is last;
+    # a reranker can only promote it into a limit=1 answer if it saw the untruncated pool
+    await _add(store, "Customer requested a refund", _FAR)
+    ranked_last = await _add(store, "The sky was clear tonight", _NEAR)
+
+    results = await retrieve(
+        store, StubEmbedder(_NEAR), "refund", limit=1, reranker=ReversingReranker()
+    )
+
+    assert [r.id for r in results] == [ranked_last]
