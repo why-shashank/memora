@@ -164,6 +164,33 @@ async def test_reranker_sees_the_whole_pool_before_the_limit_cut(
     assert [r.id for r in results] == [ranked_last]
 
 
+# --- M2.5c: the keyword leg requires every query term ---
+
+
+async def test_keyword_leg_ignores_a_memory_matching_only_one_query_term(
+    store: PostgresStorage,
+) -> None:
+    # "policy" is incidental to both memories; only one is about refunds at all. Under the
+    # OR-semantics this replaced, sharing that one word earned the aisle-seat memory a
+    # full-strength keyword leg — the M2.4 smoke test caught exactly this, and at 20K rows
+    # it filled 80% of the fusion pool with matches like it.
+    #
+    # Asserting the score rather than the order is deliberate: under OR the two memories fuse
+    # to *identical* scores (each wins one leg and places second in the other), so an ordering
+    # assertion would be decided by the UUID tiebreak — a coin flip, red or green by luck.
+    await _add(store, "Aisle seat policy for frequent flyers", _NEAR)
+    refunds = await _add(store, "The refund policy is thirty days", _FAR)
+
+    results = await retrieve(store, StubEmbedder(_NEAR), "refund policy")
+
+    scores = {r.content: r.score for r in results}
+    # nearest vector, and nothing else: rank 1 of one leg is 1/(60+1). A keyword leg would
+    # add another ~1/61 on top, which is precisely the bug.
+    assert scores["Aisle seat policy for frequent flyers"] == pytest.approx(1 / 61)
+    # and the consequence: the memory that actually answers the query comes first
+    assert results[0].id == refunds
+
+
 # --- M2.5a: trust does not override relevance ---
 
 

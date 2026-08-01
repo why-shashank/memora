@@ -30,9 +30,20 @@ _POOL = 20
 # base table plus one more COALESCE term in `fused`.
 _HYBRID_SQL = """
 WITH q AS (
-    -- S2 found FTS needs OR-semantics (any term may match), so turn plainto's
-    -- AND-joined lexemes into an OR query, keeping stemming + stopword removal.
-    SELECT replace(plainto_tsquery('english', :query_text)::text, ' & ', ' | ')::tsquery AS query
+    -- AND-semantics: every query term must appear. `plainto_tsquery` gives this natively.
+    --
+    -- S2 relaxed it to OR (any term may match) to protect recall, and M2.5b measured the
+    -- price at volume: the OR leg matched a fixed *fraction* of the corpus -- a median of
+    -- 1,097 rows at 20K -- filling 80% of the fusion pool with memories that shared one
+    -- incidental word, each earning a full-strength RRF leg against what the vector leg
+    -- actually found. Head to head on the same corpus, AND took hit@1 0.55 -> 0.70, MRR
+    -- 0.72 -> 0.78, search p95 ~20ms -> ~6ms, and growth-per-4x-rows 2.89 -> 1.73. It fixed
+    -- paraphrase queries outright (MRR 0.67 -> 1.00): the vector leg had already ranked the
+    -- right memory first and keyword noise was pushing it down.
+    --
+    -- The cost, accepted knowingly: hit@5 0.90 -> 0.80. A query whose exact words aren't all
+    -- present now leans entirely on the vector leg, which is the leg whose job that is.
+    SELECT plainto_tsquery('english', :query_text) AS query
 ),
 vector_hits AS (
     SELECT id, ROW_NUMBER() OVER (ORDER BY distance) AS rank

@@ -28,9 +28,10 @@ an end-to-end number nearly blind to the SQL: the M2.1 defect moved the vector l
 
 **3. How wide the keyword leg casts, and what volume does to relevance.** hit@k against 41
 distractors and hit@k against 20,000 are different questions, and only the second resembles a
-deployment. S2 required OR-semantics for recall (any term may match) and nobody measured the
-cost; the cost is *volume-dependent* and so invisible everywhere else — "how long do I have to
-get my money back" matches a handful of rows in the golden set and over a thousand here.
+deployment. This is the measurement that condemned OR-semantics (M2.5b → M2.5c): the cost was
+*volume-dependent* and so invisible everywhere else — "how long do I have to get my money
+back" matched a handful of rows in the golden set and 1,097 here, filling 80% of the fusion
+pool. Under AND the same probe reads 0 rows and 26%. Watch it for drift upward.
 
 Deliberately not a pytest test: a run takes minutes, and asserting on wall-clock timings in
 the suite buys flakiness rather than confidence. It is a tool you run when you touch
@@ -73,16 +74,17 @@ _FIRST_STAGE = 0.25
 # Where to draw the fail line, as an exponent of the corpus growth: search may grow at most
 # as fast as the ¾ power of the row count (4× more rows → at most 2.83×).
 #
-# Calibrated from measurement, not theory. Over repeated runs the current query grows
-# **1.7–2.1×** for 4× the rows, and the real M2.1 defect — the shared-CTE shape replayed out
-# of git against this same corpus — grows **3.8×**, near-perfectly linear. 2.83× is the
-# geometric midpoint: ~35% clear of healthy, ~25% under the defect.
+# Calibrated from measurement, not theory. The real M2.1 defect — the shared-CTE shape
+# replayed out of git against this same corpus — grows **3.8×**, near-perfectly linear.
+# The current query grew 1.7–2.1× when this was calibrated under OR-semantics and 1.62×
+# since M2.5c switched the keyword leg to AND. 2.83× keeps margin on both sides.
 #
-# Theory would argue for something nearer 0.5, since HNSW and GIN are both far better than
-# linear. It doesn't hold today because the keyword leg is genuinely near-linear: OR-semantics
-# matches a fixed *fraction* of the corpus (~5%), so more rows means proportionally more
-# ranking work even with GIN doing its job perfectly. Switching that leg to AND-semantics
-# measures 1.73× and would buy back most of the headroom — see evals/README.md.
+# The ceiling is deliberately looser than theory (which would argue nearer 0.5, since HNSW
+# and GIN are both far better than linear). Under OR the keyword leg was genuinely
+# near-linear — it matched a fixed *fraction* of the corpus, so more rows meant
+# proportionally more ranking work even with GIN doing its job perfectly. AND removed most
+# of that, and the extra room is now headroom rather than slack. Left as-is on purpose: a
+# guard retuned tight after every improvement is a guard that fires on the next one.
 _GROWTH_EXPONENT = 0.75
 
 _FIRST = [
@@ -249,12 +251,14 @@ async def _seed(
 
 
 async def _fts_breadth(store: PostgresStorage, query: str) -> int:
-    """How many rows the keyword leg matches before the pool truncates it — the OR-semantics
-    cost, which only shows up at volume. Mirrors `_HYBRID_SQL`'s tsquery exactly."""
-    sql = text(
-        "SELECT count(*) FROM memories WHERE content_tsv @@ "
-        "replace(plainto_tsquery('english', :q)::text, ' & ', ' | ')::tsquery"
-    )
+    """How many rows the keyword leg matches before the pool truncates it.
+
+    Mirrors `_HYBRID_SQL`'s tsquery exactly — keep the two in step. This number is what
+    condemned OR-semantics in M2.5b (median 1,097 rows at 20K, 80% of the pool); under the
+    AND-semantics of M2.5c it should be small, and a drift upward means the keyword leg has
+    started casting wide again.
+    """
+    sql = text("SELECT count(*) FROM memories WHERE content_tsv @@ plainto_tsquery('english', :q)")
     async with store.session_factory() as session:
         return int((await session.execute(sql, {"q": query})).scalar_one())
 
@@ -389,7 +393,7 @@ async def _measure(
         print(f"\n{'keyword leg':<14}{'p50 rows':>10}{'p95 rows':>10}{'pool filled':>13}")
         print("-" * 47)
         print(
-            f"{'or-semantics':<14}{percentile(breadth, 50):>10,.0f}"
+            f"{'and-semantics':<14}{percentile(breadth, 50):>10,.0f}"
             f"{percentile(breadth, 95):>10,.0f}{sum(pool_share) / len(pool_share):>12.0%}"
         )
 

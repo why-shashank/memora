@@ -36,19 +36,24 @@ diagnostic, and MRR is the tuning signal because it moves when a fix promotes th
 memory from 4th to 2nd. S2's `temporal` category is deliberately absent — there is no
 validity filter to test until M3.2.
 
-## Baseline — 2026-07-30, `all-MiniLM-L6-v2`, 20 queries
+## Baseline — 2026-07-31, `all-MiniLM-L6-v2`, 20 queries
 
 | category | queries | hit@1 | hit@3 | hit@5 | MRR |
 |---|---|---|---|---|---|
 | `correction` | 3 | 0.67 | 1.00 | 1.00 | 0.83 |
-| `exact_term` | 4 | 0.50 | 1.00 | 1.00 | 0.71 |
-| `policy` | 4 | 0.75 | 0.75 | 0.75 | 0.75 |
+| `exact_term` | 4 | 0.75 | 1.00 | 1.00 | 0.83 |
+| `policy` | 4 | 1.00 | 1.00 | 1.00 | 1.00 |
 | `scoped` | 4 | 1.00 | 1.00 | 1.00 | 1.00 |
-| `semantic` | 5 | 0.40 | 1.00 | 1.00 | 0.67 |
-| **OVERALL** | 20 | **0.65** | **0.95** | **0.95** | **0.78** |
+| `semantic` | 5 | 1.00 | 1.00 | 1.00 | 1.00 |
+| **OVERALL** | 20 | **0.90** | **1.00** | **1.00** | **0.94** |
 
-`pipeline` and `rrf` currently produce identical numbers, because retrieval ranks on
-relevance alone. Any future ranking stage has to beat this table to earn its place.
+Up from 0.65 / 0.95 / 0.95 / 0.78 when the keyword leg used OR-semantics (M2.5c). Every
+category except `correction` is now perfect at this corpus size; the one `correction` miss is
+a genuine near-tie between a correction and the fact it corrects, which M3.2 resolves by
+filtering the superseded memory out rather than out-ranking it.
+
+`pipeline` and `rrf` produce identical numbers, because retrieval ranks on relevance alone.
+Any future ranking stage has to beat this table to earn its place.
 
 ### What this harness killed on its first run
 
@@ -111,16 +116,19 @@ Three things had to be right, and each was wrong first:
 
 | corpus | hit@1 | hit@3 | hit@5 | MRR |
 |---|---|---|---|---|
-| 41 memories | **0.65** | 0.95 | 0.95 | **0.78** |
-| 20,041 memories | 0.55 | 0.95 | 0.95 | 0.72 |
+| 41 memories | **0.90** | **1.00** | **1.00** | **0.94** |
+| 20,041 memories | 0.75 | 0.80 | 0.80 | 0.78 |
 
-hit@5 holds; hit@1 and MRR erode. Worth re-reading whenever the golden-set numbers look
-reassuring — they are measured against 41 distractors, and a deployment is not.
+Worth re-reading whenever the golden-set numbers look reassuring — they are measured against
+41 distractors, and a deployment is not. The gap is concentrated in `exact_term` and `policy`
+(both 0.50 at volume, both 1.00 on the golden set): unique tokens like account numbers survive
+scale fine, but a *paraphrased* policy question has to find one memory among 20,000 on meaning
+alone. That is the entity leg's case to make in M2.8.
 
 *(hit@1 wobbles ±0.05 between runs: `ORDER BY fused.score DESC, memories.id` breaks score
 ties on randomly-generated UUIDs. Real but small; the ranks it flips are genuine ties.)*
 
-### What OR-semantics costs — the M2.4 smoke test, quantified
+### What OR-semantics cost — the M2.4 smoke test, quantified (resolved in M2.5c)
 
 S2 required OR-semantics so any query term may match, and justified it on recall. Nobody had
 measured the price. At 20K rows the keyword leg matches a **median of 1,097 rows and a p95 of
@@ -144,4 +152,15 @@ A fallback (AND, then OR only when AND finds nothing) was built and rejected: fo
 natural-language question AND matches **zero** rows, so the fallback fires almost always and
 degenerates into OR plus an extra subquery — p95 78–148ms.
 
-Tracked as the keyword-semantics decision in `TASKS.md`.
+**Outcome (M2.5c): switched to AND.** Measured after the change, at 20K:
+
+| | keyword rows p50 | pool filled | search p95 | growth for 4× rows | hit@1 | hit@5 | MRR |
+|---|---|---|---|---|---|---|---|
+| OR | 1,097 | 80% | ~21ms | 1.83–2.10× | 0.55 | **0.95** | 0.72 |
+| AND | **0** | **26%** | **11.2ms** | **1.62×** | **0.75** | 0.80 | **0.78** |
+
+The keyword leg now contributes *nothing* to the median natural-language question and fires
+only on the exact-token queries it exists for, which is the behaviour a hybrid system wants:
+keyword handles tokens, vector handles meaning. On the golden set the switch was a clean
+sweep with no downside at all (0.65 → 0.90 hit@1, 0.78 → 0.94 MRR, hit@5 to a perfect 1.00);
+the hit@5 cost only appears at volume, and it lands on `exact_term` and `policy`.
