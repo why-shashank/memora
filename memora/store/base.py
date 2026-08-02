@@ -79,6 +79,39 @@ class StorageBackend(ABC):
         """
 
     @abstractmethod
+    async def resolve_entity(
+        self, *, name: str, type: str, aliases: list[str] | None = None
+    ) -> UUID:
+        """Find the entity these surface forms name, or create it; returns its id.
+
+        Alias matching only — exact, after canonicalization. Lookups are partitioned
+        by ``type``: a name shared by entities of different types must resolve to
+        different entities, never merge them (S5).
+        """
+
+    @abstractmethod
+    async def link_memory(self, *, memory_id: UUID, entity_ids: list[UUID]) -> None:
+        """Record which entities a memory is about. Idempotent."""
+
+    @abstractmethod
+    async def merge_entities(self, *, source: UUID, target: UUID, actor_type: str) -> None:
+        """Fold ``source`` into ``target``, moving its aliases and memory links.
+
+        Contract: lands with an ``entity_merged`` audit entry naming what was
+        absorbed — a resolution decision is a trust decision.
+        """
+
+    @abstractmethod
+    async def split_entity(
+        self, *, source: UUID, alias_keys: list[str], canonical_name: str, actor_type: str
+    ) -> UUID:
+        """Pull ``alias_keys`` out of ``source`` into a new entity; returns its id.
+
+        The inverse of ``merge_entities`` when given the absorbed entity's aliases,
+        which is what makes a merge reversible. Audited as ``entity_split``.
+        """
+
+    @abstractmethod
     async def hybrid_search(
         self,
         *,

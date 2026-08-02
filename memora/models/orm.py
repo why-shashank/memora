@@ -82,14 +82,74 @@ class AuditLog(Base):
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()")
     )
-    memory_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True))
-    # action vocabulary grows with the flows: created (M1.5); superseded/promoted/
-    # deleted/... land with M3/M4
+    # exactly one of memory_id / entity_id names the subject (CHECK, migration 0004)
+    memory_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
+    entity_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
+    # action vocabulary grows with the flows: created (M1.5); entity_near_miss/
+    # entity_merged/entity_split (M2.6); superseded/promoted/deleted/... with M3/M4
     action: Mapped[str] = mapped_column(Text)
     actor_type: Mapped[str] = mapped_column(Text)
     reason: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=text("now()")
+    )
+
+
+class Entity(Base):
+    """A real-world thing memories can be about (dev-plan §5).
+
+    ``canonical_name`` is display only; every lookup goes through EntityAlias.
+    """
+
+    __tablename__ = "entities"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()")
+    )
+    # person | organization | product (validated at the boundary, free text here —
+    # same reasoning as Memory.type)
+    type: Mapped[str] = mapped_column(Text)
+    canonical_name: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=text("now()")
+    )
+
+
+class EntityAlias(Base):
+    """Every surface form that names an entity, one row each.
+
+    A table rather than an ``aliases`` array column on `entities` so that
+    ``PRIMARY KEY (entity_type, alias_key)`` can enforce *one entity per name* in
+    the database. Two workers resolving the same customer concurrently then collide
+    on the constraint instead of quietly creating duplicate entities — which is the
+    exact failure entity resolution exists to prevent.
+
+    ``entity_type`` is denormalized from `entities` because it is half of that key.
+    S5 is why it is in the key at all: the extraction model correctly lists a
+    customer's email as a mention of both the person and their employer, so a
+    type-blind index fuses `Leo Tran` into `Stackpine` (measured: 3 collapses in 3
+    reps; partitioning by type took it to 0).
+    """
+
+    __tablename__ = "entity_aliases"
+
+    entity_type: Mapped[str] = mapped_column(Text, primary_key=True)
+    alias_key: Mapped[str] = mapped_column(Text, primary_key=True)
+    entity_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("entities.id", ondelete="CASCADE")
+    )
+
+
+class MemoryEntity(Base):
+    """Which memories are about which entities — the join M2.8's CTE traverses."""
+
+    __tablename__ = "memory_entities"
+
+    memory_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("memories.id", ondelete="CASCADE"), primary_key=True
+    )
+    entity_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("entities.id", ondelete="CASCADE"), primary_key=True
     )
 
 

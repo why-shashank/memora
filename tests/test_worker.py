@@ -25,7 +25,9 @@ async def store(migrated_db_url: str) -> AsyncIterator[PostgresStorage]:
     async with storage.session_factory() as session:
         # TRUNCATE (not DELETE) on audit_log: deliberate admin/test cleanup stays
         # possible — the append-only trigger blocks row-level UPDATE/DELETE only
-        await session.execute(text("TRUNCATE extraction_jobs, memories, audit_log"))
+        await session.execute(
+            text("TRUNCATE extraction_jobs, memories, audit_log, memory_entities")
+        )
         await session.commit()
     yield storage
     await storage.dispose()

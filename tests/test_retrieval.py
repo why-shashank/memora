@@ -34,7 +34,7 @@ from memora.store.postgres import PostgresStorage
 async def store(migrated_db_url: str) -> AsyncIterator[PostgresStorage]:
     storage = PostgresStorage(migrated_db_url)
     async with storage.session_factory() as session:
-        await session.execute(text("TRUNCATE memories, audit_log"))
+        await session.execute(text("TRUNCATE memories, audit_log, memory_entities"))
         await session.commit()
     yield storage
     await storage.dispose()

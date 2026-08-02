@@ -3,11 +3,20 @@
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import select, text, update
+from sqlalchemy import delete, select, text, update
+from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async_engine
 
+from memora.entities import canonical_key
 from memora.models import MemoryCreate, Scope
-from memora.models.orm import AuditLog, ExtractionJob, Memory
+from memora.models.orm import (
+    AuditLog,
+    Entity,
+    EntityAlias,
+    ExtractionJob,
+    Memory,
+    MemoryEntity,
+)
 from memora.store.base import ClaimedJob, RetrievedMemory, StorageBackend
 
 # Reciprocal-rank fusion: a memory's score is the sum over legs of 1/(k + rank).
@@ -179,6 +188,152 @@ class PostgresStorage(StorageBackend):
             # one commit: a memory and its audit row land together or not at all
             await session.commit()
         return [row.id for row in rows]
+
+    async def resolve_entity(
+        self, *, name: str, type: str, aliases: list[str] | None = None
+    ) -> UUID:
+        keys = {canonical_key(form) for form in [name, *(aliases or [])]}
+        keys.discard("")
+
+        async with self.session_factory() as session:
+            existing = (
+                await session.execute(
+                    select(EntityAlias.entity_id)
+                    .where(EntityAlias.entity_type == type)
+                    .where(EntityAlias.alias_key.in_(keys))
+                    .limit(1)
+                )
+            ).scalar_one_or_none()
+
+            if existing is not None:
+                # Same thing, new way of naming it — learn the forms we hadn't seen.
+                await session.execute(
+                    insert(EntityAlias)
+                    .values(
+                        [
+                            {"entity_type": type, "alias_key": key, "entity_id": existing}
+                            for key in sorted(keys)
+                        ]
+                    )
+                    .on_conflict_do_nothing()
+                )
+                await session.commit()
+                return existing
+
+            entity = Entity(type=type, canonical_name=name)
+            session.add(entity)
+            await session.flush()
+            session.add_all(
+                EntityAlias(entity_type=type, alias_key=key, entity_id=entity.id)
+                for key in sorted(keys)
+            )
+
+            # One of these names is already taken by an entity of another type. That is
+            # usually correct and must not merge them (S5) — but it is also the signal a
+            # human needs to spot a genuine duplicate, so it is recorded rather than
+            # dropped. Once per new entity, not once per lookup: the next resolution of
+            # this name finds the entity above and never reaches here.
+            collision = (
+                await session.execute(
+                    select(EntityAlias.alias_key, EntityAlias.entity_type)
+                    .where(EntityAlias.alias_key.in_(keys))
+                    .where(EntityAlias.entity_type != type)
+                    .limit(1)
+                )
+            ).one_or_none()
+            if collision is not None:
+                session.add(
+                    AuditLog(
+                        entity_id=entity.id,
+                        action="entity_near_miss",
+                        actor_type="system",
+                        reason=f"alias {collision.alias_key!r} also names a"
+                        f" {collision.entity_type}; kept separate",
+                    )
+                )
+            await session.commit()
+            return entity.id
+
+    async def link_memory(self, *, memory_id: UUID, entity_ids: list[UUID]) -> None:
+        if not entity_ids:
+            return
+        async with self.session_factory() as session:
+            await session.execute(
+                insert(MemoryEntity)
+                .values([{"memory_id": memory_id, "entity_id": e} for e in entity_ids])
+                .on_conflict_do_nothing()
+            )
+            await session.commit()
+
+    async def merge_entities(self, *, source: UUID, target: UUID, actor_type: str) -> None:
+        async with self.session_factory() as session:
+            absorbed = (
+                await session.execute(select(Entity).where(Entity.id == source))
+            ).scalar_one()
+            # Repoint before deleting the source, or its rows cascade away with it.
+            # A memory linked to both entities would collide on the composite PK, so
+            # drop those links rather than moving them.
+            await session.execute(
+                delete(MemoryEntity).where(
+                    MemoryEntity.entity_id == source,
+                    MemoryEntity.memory_id.in_(
+                        select(MemoryEntity.memory_id).where(MemoryEntity.entity_id == target)
+                    ),
+                )
+            )
+            await session.execute(
+                update(MemoryEntity)
+                .where(MemoryEntity.entity_id == source)
+                .values(entity_id=target)
+            )
+            await session.execute(
+                update(EntityAlias).where(EntityAlias.entity_id == source).values(entity_id=target)
+            )
+            await session.execute(delete(Entity).where(Entity.id == source))
+            session.add(
+                AuditLog(
+                    entity_id=target,
+                    action="entity_merged",
+                    actor_type=actor_type,
+                    reason=f"absorbed {absorbed.canonical_name!r} ({source})",
+                )
+            )
+            await session.commit()
+
+    async def split_entity(
+        self, *, source: UUID, alias_keys: list[str], canonical_name: str, actor_type: str
+    ) -> UUID:
+        async with self.session_factory() as session:
+            parent = (await session.execute(select(Entity).where(Entity.id == source))).scalar_one()
+            entity = Entity(type=parent.type, canonical_name=canonical_name)
+            session.add(entity)
+            await session.flush()
+
+            await session.execute(
+                update(EntityAlias)
+                .where(EntityAlias.entity_type == parent.type)
+                .where(EntityAlias.alias_key.in_(alias_keys))
+                .values(entity_id=entity.id)
+            )
+            await session.execute(
+                insert(EntityAlias)
+                .values(
+                    entity_type=parent.type,
+                    alias_key=canonical_key(canonical_name),
+                    entity_id=entity.id,
+                )
+                .on_conflict_do_nothing()
+            )
+            session.add(
+                AuditLog(
+                    entity_id=entity.id,
+                    action="entity_split",
+                    actor_type=actor_type,
+                    reason=f"split from {parent.canonical_name!r} ({source}): {alias_keys}",
+                )
+            )
+            await session.commit()
+            return entity.id
 
     async def hybrid_search(
         self,

@@ -49,7 +49,7 @@ async def _seed(db_url: str, rows: list[tuple[str, list[float], Scope]]) -> None
     store = PostgresStorage(db_url)
     try:
         async with store.session_factory() as session:
-            await session.execute(text("TRUNCATE memories, audit_log"))
+            await session.execute(text("TRUNCATE memories, audit_log, memory_entities"))
             await session.commit()
         await store.add_memories(
             [
