@@ -11,7 +11,7 @@ from uuid import UUID
 import pytest
 from sqlalchemy import text
 
-from memora.entities import canonical_key
+from memora.entities import candidate_keys, canonical_key
 from memora.models import MemoryCreate
 from memora.store.postgres import PostgresStorage
 
@@ -58,6 +58,27 @@ def test_canonical_key_strips_a_legal_suffix() -> None:
 def test_canonical_key_keeps_a_name_that_is_only_a_suffix() -> None:
     # stripping must never empty a key — an empty key would collide with every other
     assert canonical_key("Ltd") != ""
+
+
+# ------------------------------------------------------- naming an entity in a question (M2.8)
+
+
+def test_candidate_keys_finds_a_name_buried_in_a_sentence() -> None:
+    # Retrieval has no extraction step to tell it which words are a name, so it offers every
+    # short run of words and lets the alias index reject the ones that name nothing.
+    keys = candidate_keys("Does Acme Freight still print their own labels?")
+    assert "acme freight" in keys
+    assert "acme" in keys  # a one-word mention is how people actually refer to a customer
+
+
+def test_candidate_keys_folds_a_question_the_way_the_index_folds_a_name() -> None:
+    # The lookup is exact, so both sides must agree: whatever `canonical_key` did to the
+    # stored alias has to happen to the question too, punctuation and legal suffix alike.
+    assert canonical_key("Acme Freight") in candidate_keys("Any news from Acme Freight, Inc.?")
+
+
+def test_candidate_keys_of_a_question_naming_nobody_matches_no_stored_name() -> None:
+    assert canonical_key("Acme Freight") not in candidate_keys("aurora colours glowing")
 
 
 # ------------------------------------------------------------------ resolution

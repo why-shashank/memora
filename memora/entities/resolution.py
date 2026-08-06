@@ -33,3 +33,30 @@ def canonical_key(surface_form: str) -> str:
     # A name that is *only* a suffix ('Co') would strip to empty and then collide
     # with every other empty key, so it keeps its unstripped form.
     return stripped or _WHITESPACE.sub(" ", key).strip()
+
+
+# Longest name the entity leg will look for. Four words covers 'Bank of the West' and
+# 'Acme Freight International'; going wider costs a key per extra word per position and
+# finds names nobody types into a question.
+_MAX_NAME_WORDS = 4
+
+
+def candidate_keys(query_text: str, *, max_words: int = _MAX_NAME_WORDS) -> set[str]:
+    """Every short run of words in ``query_text``, keyed the way an alias is keyed.
+
+    Retrieval has no extraction step, so it cannot know which words of a question are a
+    name — offering all of them and letting the alias index reject the rest is cheaper
+    than an LLM call on the read path, and it is exact: a run of words either is a name
+    somebody stored or it is not.
+
+    The whole question is canonicalized *first* and then split, so the folding both sides
+    depend on happens once and identically. The precision risk is real and worth watching:
+    a person called 'Will' or a product called 'Chat' turns a common word into an entity
+    match, and every question containing it fires the leg.
+    """
+    words = canonical_key(query_text).split()
+    return {
+        " ".join(words[start : start + length])
+        for length in range(1, max_words + 1)
+        for start in range(len(words) - length + 1)
+    }

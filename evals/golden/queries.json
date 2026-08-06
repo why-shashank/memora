@@ -22,5 +22,14 @@
 
   {"category": "correction", "query": "How should FieldWorks import their customer records?", "user_id": "fieldworks", "expected_id": "c02"},
   {"category": "correction", "query": "Can we give Nimbus Retail a refund for the outage?", "user_id": "nimbus", "expected_id": "b03"},
-  {"category": "correction", "query": "Does Kestrel Labs still get the startup discount?", "user_id": "kestrel", "expected_id": "d02"}
+  {"category": "correction", "query": "Does Kestrel Labs still get the startup discount?", "user_id": "kestrel", "expected_id": "d02"},
+
+  {"category": "relational", "query": "Remind me of the account number we bill Orchid against.", "user_id": null, "expected_id": "f01"},
+  {"category": "relational", "query": "What did we commit to sending FieldWorks?", "user_id": null, "expected_id": "c05"},
+  {"category": "relational", "query": "Who at Harbor should be kept in the loop?", "user_id": null, "expected_id": "e03"},
+  {"category": "relational", "query": "What has Acme been raising tickets about?", "user_id": null, "expected_id": "a07"},
+  {"category": "relational", "query": "When is Nimbus able to take a change safely?", "user_id": null, "expected_id": "b04"},
+
+  {"category": "multi_hop", "query": "What plan is Dana's company on?", "user_id": null, "expected_id": "a02"},
+  {"category": "multi_hop", "query": "Where is the head office of the customer on account BR-88214?", "user_id": null, "expected_id": "a06"}
 ]

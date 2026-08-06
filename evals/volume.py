@@ -2,6 +2,7 @@
 
     uv run python -m evals.volume                     # 5K -> 20K, exits non-zero on regression
     uv run python -m evals.volume --memories 50000
+    uv run python -m evals.volume --no-entities       # the pre-M2.8 arm, for comparison
 
 The M2.1 HNSW regression was invisible at test-row counts: at forty rows every query plan is
 identical and every latency is a rounding error, so a green suite said nothing. It took
@@ -49,12 +50,14 @@ from typing import Any
 from alembic import command
 from alembic.config import Config
 from sqlalchemy import text
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from testcontainers.postgres import PostgresContainer
 
 from evals.metrics import QueryResult, percentile, summarize
 from evals.runner import GOLDEN, K_VALUES
 from memora.config import Settings
 from memora.models import ActorType, MemoryCreate, MemoryType, Scope
+from memora.models.orm import MemoryEntity
 from memora.providers import get_embedding_provider
 from memora.providers.base import EmbeddingProvider
 from memora.store.postgres import PostgresStorage
@@ -184,27 +187,37 @@ def generate(count: int) -> list[dict[str, Any]]:
         uid = f"gen-{customer:05d}"
         company = f"{rng.choice(_COMPANIES)} {customer}"
         name = f"{rng.choice(_FIRST)} {rng.choice(_LAST)}"
+        # what each row is about, in the shape M2.7's extraction emits. Generated memories
+        # need links or the entity leg would meet 20,000 rows that no question can reach
+        # through an entity — the alias index would stay golden-set sized and the leg would
+        # look far cheaper than it is.
+        org = [{"canonical_name": company, "type": "organization", "mentions": [company]}]
+        person = [{"canonical_name": name, "type": "person", "mentions": [name]}]
         rows = [
             (
                 "entity_fact",
                 f"{company} is on the {rng.choice(_PLANS)} plan with "
                 f"{rng.choice(['monthly', 'annual'])} billing.",
+                org,
             ),
             (
                 "entity_fact",
                 f"Billing account number for {company} is GN-{100000 + customer * 37}.",
+                org,
             ),
             (
                 "entity_fact",
                 f"{name}'s contact email is "
                 f"{name.split()[0].lower()}@{company.split()[0].lower()}.example.com.",
+                person + org,  # S5's case: an email mentions the person and their employer
             ),
-            ("entity_fact", f"{company} {rng.choice(_ENVS)}."),
-            ("preference", f"{name} {rng.choice(_CHANNELS)}."),
+            ("entity_fact", f"{company} {rng.choice(_ENVS)}.", org),
+            ("preference", f"{name} {rng.choice(_CHANNELS)}.", person),
             (
                 "commitment",
                 f"Support owes {name} a follow-up about the "
                 f"{rng.choice(['pricing sheet', 'migration plan', 'security review'])}.",
+                person,
             ),
         ]
         for _ in range(rng.randint(2, 5)):  # resolved-issue noise, the bulk of a real corpus
@@ -213,15 +226,50 @@ def generate(count: int) -> list[dict[str, Any]]:
                 (
                     "entity_fact",
                     f"Previously resolved a {code} error for {company} by {rng.choice(_FIXES)}.",
+                    org,
                 )
             )
-        out += [{"user_id": uid, "type": t, "content": c} for t, c in rows]
+        out += [{"user_id": uid, "type": t, "content": c, "entities": e} for t, c, e in rows]
         customer += 1
     return out[:count]
 
 
+async def _link(
+    store: PostgresStorage,
+    ids: list[Any],
+    rows: list[dict[str, Any]],
+    resolved: dict[tuple[str, str], Any],
+) -> None:
+    """Link a seeded chunk to its entities, in one insert rather than one per memory.
+
+    `resolved` caches by (name, type) across chunks. That cache is safe *here* and wrong in
+    the worker: the harness writes fixed labels whose mentions never vary, whereas each
+    `resolve_entity` call on the write path teaches the alias index a surface form it had
+    not seen, so caching there would silently drop the new ones (M2.7).
+    """
+    links = []
+    for memory_id, row in zip(ids, rows, strict=True):
+        for entity in row.get("entities", []):
+            key = (entity["canonical_name"], entity["type"])
+            if key not in resolved:
+                resolved[key] = await store.resolve_entity(
+                    name=entity["canonical_name"],
+                    type=entity["type"],
+                    aliases=entity["mentions"],
+                )
+            links.append({"memory_id": memory_id, "entity_id": resolved[key]})
+    if not links:
+        return
+    async with store.session_factory() as session:
+        await session.execute(pg_insert(MemoryEntity).values(links).on_conflict_do_nothing())
+        await session.commit()
+
+
 async def _seed(
-    store: PostgresStorage, embedder: EmbeddingProvider, rows: list[dict[str, Any]]
+    store: PostgresStorage,
+    embedder: EmbeddingProvider,
+    rows: list[dict[str, Any]],
+    resolved: dict[tuple[str, str], Any] | None = None,
 ) -> list[Any]:
     ids: list[Any] = []
     for start in range(0, len(rows), _BATCH):
@@ -237,7 +285,10 @@ async def _seed(
             for m in chunk
         ]
         vectors = await embedder.embed([m["content"] for m in chunk])
-        ids += await store.add_memories(items, embeddings=vectors)
+        chunk_ids = await store.add_memories(items, embeddings=vectors)
+        if resolved is not None:  # None = the pre-M2.8 arm: no links, so no entity leg
+            await _link(store, chunk_ids, chunk, resolved)
+        ids += chunk_ids
         print(f"\r  seeded {len(ids):,}/{len(rows):,}", end="", flush=True)
     print()
     # A bulk insert leaves the planner reading statistics from before the load, which is a
@@ -245,7 +296,7 @@ async def _seed(
     # the two measurement stages are planned against different-quality stats and the
     # comparison measures ANALYZE, not the index.
     async with store.session_factory() as session:
-        await session.execute(text("ANALYZE memories"))
+        await session.execute(text("ANALYZE memories, memory_entities, entity_aliases"))
         await session.commit()
     return ids
 
@@ -335,7 +386,7 @@ async def _time_queries(
     return embed_times, search_raw, search_best, results
 
 
-def run(memories: int) -> int:
+def run(memories: int, link_entities: bool) -> int:
     corpus = generate(memories)
     golden = json.loads((GOLDEN / "memories.json").read_text())
     queries = json.loads((GOLDEN / "queries.json").read_text())
@@ -345,7 +396,7 @@ def run(memories: int) -> int:
         config = Config("alembic.ini")
         config.set_main_option("sqlalchemy.url", url)
         command.upgrade(config, "head")
-        return asyncio.run(_measure(url, corpus, golden, queries))
+        return asyncio.run(_measure(url, corpus, golden, queries, link_entities))
 
 
 async def _measure(
@@ -353,21 +404,24 @@ async def _measure(
     corpus: list[dict[str, Any]],
     golden: list[dict[str, Any]],
     queries: list[dict[str, Any]],
+    link_entities: bool,
 ) -> int:
     embedder = get_embedding_provider(Settings())
     store = PostgresStorage(url)
+    # shared across both seeds so one company is one entity however often it is named
+    resolved: dict[tuple[str, str], Any] | None = {} if link_entities else None
     try:
         split = int(len(corpus) * _FIRST_STAGE)
         started = time.perf_counter()
         print(f"seeding {len(golden)} golden + {split:,} generated memories")
-        golden_ids = await _seed(store, embedder, golden)
+        golden_ids = await _seed(store, embedder, golden, resolved)
         label = {stored: m["id"] for stored, m in zip(golden_ids, golden, strict=True)}
-        await _seed(store, embedder, corpus[:split])
+        await _seed(store, embedder, corpus[:split], resolved)
         small_total = split + len(golden)
         *_, small_search, _ = await _time_queries(store, embedder, queries, label)
 
         print(f"growing to {len(corpus):,} generated memories")
-        await _seed(store, embedder, corpus[split:])
+        await _seed(store, embedder, corpus[split:], resolved)
         full_total = len(corpus) + len(golden)
         embed_times, search_times, full_search, results = await _time_queries(
             store, embedder, queries, label
@@ -441,8 +495,13 @@ async def _measure(
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--memories", type=int, default=20_000)
+    parser.add_argument(
+        "--no-entities",
+        action="store_true",
+        help="skip entity linking — the pre-M2.8 vector+FTS baseline",
+    )
     args = parser.parse_args()
-    sys.exit(run(args.memories))
+    sys.exit(run(args.memories, not args.no_entities))
 
 
 if __name__ == "__main__":

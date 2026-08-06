@@ -191,6 +191,60 @@ async def test_keyword_leg_ignores_a_memory_matching_only_one_query_term(
     assert results[0].id == refunds
 
 
+# --- M2.8: the entity leg ---
+
+
+async def test_entity_leg_finds_a_memory_neither_other_leg_can_reach(
+    store: PostgresStorage,
+) -> None:
+    # The claim the third leg exists to make: the query names a customer, and the memory
+    # that answers it shares no word with the query and sits FAR in vector space. Vector
+    # and FTS both miss it; the entity link is the only path to it.
+    acme = await store.resolve_entity(name="Acme Freight", type="organization", aliases=["Acme"])
+    linked = await _add(store, "Label printing fails on the warehouse scanners", _FAR)
+    await store.link_memory(memory_id=linked, entity_ids=[acme])
+    await _add(store, "The sky was clear tonight", _NEAR)
+
+    results = await retrieve(store, StubEmbedder(_NEAR), "what is going on with Acme")
+
+    assert results[0].id == linked
+    # rank 1 of the entity leg plus rank 2 of the vector leg — the score names which legs
+    # fired, where the order alone would not distinguish a working leg from a lucky tiebreak
+    assert results[0].score == pytest.approx(1 / 61 + 1 / 62)
+
+
+async def test_a_query_naming_no_known_entity_fuses_exactly_as_before(
+    store: PostgresStorage,
+) -> None:
+    # The leg must be inert when it has nothing to say. Linked memories exist, but the query
+    # names none of them, so fusion is the two-leg arithmetic M2.1 shipped — not a third leg
+    # quietly contributing to every query the way M2.2's weighting did.
+    acme = await store.resolve_entity(name="Acme Freight", type="organization")
+    linked = await _add(store, "Label printing fails on the warehouse scanners", _FAR)
+    await store.link_memory(memory_id=linked, entity_ids=[acme])
+    near = await _add(store, "The sky was clear tonight", _NEAR)
+
+    results = await retrieve(store, StubEmbedder(_NEAR), "aurora colours glowing")
+
+    assert results[0].id == near
+    assert results[0].score == pytest.approx(1 / 61)  # vector leg alone, nothing added
+
+
+async def test_entity_leg_respects_the_scope_filter(store: PostgresStorage) -> None:
+    # An entity link crosses scopes — the same organization is named in many users' memories.
+    # The leg must not become a way to read another user's data.
+    acme = await store.resolve_entity(name="Acme Freight", type="organization")
+    theirs = await _add(store, "Label printing fails", _FAR, scope=Scope(user_id="u-2"))
+    await store.link_memory(memory_id=theirs, entity_ids=[acme])
+    mine = await _add(store, "The sky was clear tonight", _NEAR, scope=Scope(user_id="u-1"))
+
+    results = await retrieve(
+        store, StubEmbedder(_NEAR), "what is going on with Acme Freight", scope=Scope(user_id="u-1")
+    )
+
+    assert [r.id for r in results] == [mine]
+
+
 # --- M2.5a: trust does not override relevance ---
 
 

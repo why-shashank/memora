@@ -3,11 +3,11 @@
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import delete, select, text, update
+from sqlalchemy import bindparam, delete, select, text, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async_engine
 
-from memora.entities import canonical_key
+from memora.entities import candidate_keys, canonical_key
 from memora.models import MemoryCreate, Scope
 from memora.models.orm import (
     AuditLog,
@@ -74,11 +74,43 @@ fts_hits AS (
         LIMIT :pool
     ) matched
 ),
+entity_hits AS (
+    -- M2.8's third leg: the question named something, and these memories are about it.
+    --
+    -- One hop, not a graph walk. M2.6 built memory<->entity links and no entity<->entity
+    -- edges, so 'the customer on account BR-88214' cannot be followed to that customer --
+    -- the question has to name the entity itself. That is the hypothesis being measured.
+    --
+    -- Ranked by how many of the named entities a memory is about, then by vector distance.
+    -- The tiebreak is not decoration: M2.5b measured what happens when a leg contributes a
+    -- fixed *fraction* of the corpus, and a customer with 500 memories is exactly that
+    -- shape. Ordering the entity's own memories by relevance means the pool fills with the
+    -- most relevant things about the right customer instead of an arbitrary twenty.
+    --
+    -- Unlike a per-memory boost (M2.2, removed in M2.5a) this is evidence about the
+    -- query-memory *pair*: it fires only for memories about an entity this question named.
+    SELECT id, ROW_NUMBER() OVER (ORDER BY named DESC, distance) AS rank
+    FROM (
+        SELECT memories.id,
+               COUNT(DISTINCT link.entity_id) AS named,
+               memories.embedding <=> CAST(:query_embedding AS vector) AS distance
+        FROM memories
+        JOIN memory_entities link ON link.memory_id = memories.id
+        JOIN entity_aliases alias ON alias.entity_id = link.entity_id
+        WHERE alias.alias_key IN :entity_keys {scope_where}
+        GROUP BY memories.id, memories.embedding
+        ORDER BY named DESC, distance
+        LIMIT :pool
+    ) about
+),
 fused AS (
-    SELECT COALESCE(v.id, f.id) AS id,
-           COALESCE(1.0 / (:k + v.rank), 0.0) + COALESCE(1.0 / (:k + f.rank), 0.0) AS score
+    SELECT COALESCE(v.id, f.id, e.id) AS id,
+           COALESCE(1.0 / (:k + v.rank), 0.0)
+         + COALESCE(1.0 / (:k + f.rank), 0.0)
+         + COALESCE(1.0 / (:k + e.rank), 0.0) AS score
     FROM vector_hits v
     FULL OUTER JOIN fts_hits f ON v.id = f.id
+    FULL OUTER JOIN entity_hits e ON e.id = COALESCE(v.id, f.id)
 )
 SELECT memories.id, memories.content, memories.type,
        memories.actor_type, memories.confidence, fused.score
@@ -345,6 +377,8 @@ class PostgresStorage(StorageBackend):
         params: dict[str, Any] = {
             "query_text": query_text,
             "query_embedding": _vector_literal(query_embedding),
+            # every short run of words in the question, for the entity leg to look up
+            "entity_keys": sorted(candidate_keys(query_text)),
             "pool": _POOL,
             "k": _RRF_K,
         }
@@ -357,7 +391,11 @@ class PostgresStorage(StorageBackend):
                 clauses += f" AND {field} = :{field}"
                 params[field] = value
 
-        stmt = text(_HYBRID_SQL.format(scope_where=clauses))
+        # expanding: the key list is per-query, and an empty one renders as a false
+        # predicate — a question naming nobody simply contributes no entity leg
+        stmt = text(_HYBRID_SQL.format(scope_where=clauses)).bindparams(
+            bindparam("entity_keys", expanding=True)
+        )
         async with self.session_factory() as session:
             rows = (await session.execute(stmt, params)).all()
         return [
