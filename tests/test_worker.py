@@ -26,7 +26,10 @@ async def store(migrated_db_url: str) -> AsyncIterator[PostgresStorage]:
         # TRUNCATE (not DELETE) on audit_log: deliberate admin/test cleanup stays
         # possible — the append-only trigger blocks row-level UPDATE/DELETE only
         await session.execute(
-            text("TRUNCATE extraction_jobs, memories, audit_log, memory_entities")
+            text(
+                "TRUNCATE extraction_jobs, memories, audit_log,"
+                " memory_entities, entities, entity_aliases"
+            )
         )
         await session.commit()
     yield storage
@@ -104,6 +107,35 @@ _EXTRACTION_REPLY = """{"memories": [
   {"type": "preference", "content": "Prefers email over phone.", "confidence": 0.9},
   {"type": "policy", "content": "Refunds allowed within 30 days.", "confidence": 0.8}
 ]}"""
+
+
+_ENTITY_REPLY = """{"memories": [
+  {"type": "entity_fact", "content": "Renewal moved to April 15.", "entities": [
+    {"canonical_name": "Lumen Health", "type": "organization", "mentions": ["Lumen Health"]}
+  ]},
+  {"type": "preference", "content": "Priya prefers email.", "entities": [
+    {"canonical_name": "Lumen Health", "type": "organization", "mentions": ["lumenhealth.org"]},
+    {"canonical_name": "Priya Nair", "type": "person", "mentions": ["Priya"]}
+  ]}
+]}"""
+
+
+async def _links(store: PostgresStorage) -> dict[str, set[str]]:
+    """Each memory's content mapped to the canonical names it was linked to."""
+    async with store.session_factory() as session:
+        rows = (
+            await session.execute(
+                text(
+                    "SELECT m.content, e.canonical_name FROM memory_entities me"
+                    " JOIN memories m ON m.id = me.memory_id"
+                    " JOIN entities e ON e.id = me.entity_id"
+                )
+            )
+        ).all()
+    links: dict[str, set[str]] = {}
+    for row in rows:
+        links.setdefault(row.content, set()).add(row.canonical_name)
+    return links
 
 
 async def test_process_one_extracts_and_stores_candidates(store: PostgresStorage) -> None:
@@ -246,6 +278,72 @@ async def test_invalid_candidate_is_dropped_not_fatal(store: PostgresStorage) ->
         contents = (await session.execute(text("SELECT content FROM memories"))).scalars().all()
     assert contents == ["Wants monthly summaries."]
     assert await _job_status(store, job_id) == "done"
+
+
+async def test_a_memory_about_no_entity_is_stored_unlinked(store: PostgresStorage) -> None:
+    # a general policy belongs to no one — it still stores, just with nothing to link
+    await store.enqueue_extraction({"conversation": "chat"})
+
+    assert await process_one(store, StubLLM(_EXTRACTION_REPLY), StubEmbedder()) is True
+
+    async with store.session_factory() as session:
+        memories = (await session.execute(text("SELECT count(*) FROM memories"))).scalar_one()
+        links = (await session.execute(text("SELECT count(*) FROM memory_entities"))).scalar_one()
+    assert (memories, links) == (2, 0)
+
+
+async def test_process_one_links_memories_to_the_entities_they_are_about(
+    store: PostgresStorage,
+) -> None:
+    await store.enqueue_extraction({"conversation": "chat"})
+
+    assert await process_one(store, StubLLM(_ENTITY_REPLY), StubEmbedder()) is True
+
+    # links are per memory, not per transcript: the preference is about both, the
+    # renewal fact only about the company
+    assert await _links(store) == {
+        "Renewal moved to April 15.": {"Lumen Health"},
+        "Priya prefers email.": {"Lumen Health", "Priya Nair"},
+    }
+    async with store.session_factory() as session:
+        orgs = (
+            await session.execute(text("SELECT count(*) FROM entities WHERE type = 'organization'"))
+        ).scalar_one()
+    # both memories name the company by a different surface form — one entity, not two
+    assert orgs == 1
+
+
+async def test_the_same_customer_in_a_later_conversation_is_one_entity(
+    store: PostgresStorage,
+) -> None:
+    # S5's cross-conversation case, which is the only thing entity resolution exists
+    # for: a second conversation names the same customer 'Lumen Health Inc.'
+    await store.enqueue_extraction({"conversation": "first chat"})
+    assert await process_one(store, StubLLM(_ENTITY_REPLY), StubEmbedder()) is True
+
+    later = """{"memories": [
+      {"type": "commitment", "content": "Will send the SOC 2 report by Friday.", "entities": [
+        {"canonical_name": "Lumen Health Inc.", "type": "organization",
+         "mentions": ["Lumen Health Inc."]}
+      ]}
+    ]}"""
+    await store.enqueue_extraction({"conversation": "second chat"})
+    assert await process_one(store, StubLLM(later), StubEmbedder()) is True
+
+    async with store.session_factory() as session:
+        linked = (
+            (
+                await session.execute(
+                    text(
+                        "SELECT DISTINCT me.entity_id FROM memory_entities me"
+                        " JOIN entities e ON e.id = me.entity_id WHERE e.type = 'organization'"
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+    assert len(linked) == 1  # three memories across two conversations, one customer
 
 
 async def test_process_one_embeds_memories_on_write(store: PostgresStorage) -> None:

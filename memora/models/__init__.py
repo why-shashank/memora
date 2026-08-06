@@ -2,6 +2,7 @@
 
 from memora.models.dto import (
     ActorType,
+    EntityType,
     MemoryCreate,
     MemoryStatus,
     MemoryType,
@@ -10,6 +11,7 @@ from memora.models.dto import (
 
 __all__ = [
     "ActorType",
+    "EntityType",
     "MemoryCreate",
     "MemoryStatus",
     "MemoryType",

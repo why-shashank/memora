@@ -14,7 +14,7 @@ from memora.extraction import (
     PriorMemory,
     extract_memories,
 )
-from memora.models import MemoryType
+from memora.models import EntityType, MemoryType
 from memora.providers.base import LLMProvider
 
 
@@ -102,3 +102,61 @@ async def test_sends_transcript_and_selectivity_rules_to_model() -> None:
     assert "Customer: I only want email." in (stub.calls[0]["prompt"] or "")
     # the KB-exclusion rule is what makes skip-KB-content work
     assert "knowledge base" in (stub.calls[0]["system"] or "").lower()
+
+
+# ------------------------------------------------------------------ entity mentions (M2.7)
+
+_WITH_ENTITIES = """{"memories": [
+  {"type": "entity_fact", "content": "Renewal moved to April 15.", "confidence": 0.9,
+   "entities": [
+     {"canonical_name": "Lumen Health", "type": "organization",
+      "mentions": ["Lumen Health", "lumenhealth.org"]},
+     {"canonical_name": "Priya Nair", "type": "person",
+      "mentions": ["Priya", "priya@lumenhealth.org"]}
+   ]}
+]}"""
+
+
+async def test_parses_entity_mentions_per_candidate() -> None:
+    result = await extract_memories("chat", StubLLM(_WITH_ENTITIES))
+
+    assert [(e.canonical_name, e.type) for e in result[0].entities] == [
+        ("Lumen Health", EntityType.organization),
+        ("Priya Nair", EntityType.person),
+    ]
+    # mentions are the alias set resolution keys on (M2.6), so they travel verbatim
+    assert result[0].entities[0].mentions == ["Lumen Health", "lumenhealth.org"]
+
+
+async def test_candidate_with_no_entities_parses_as_an_empty_list() -> None:
+    # a general policy is about no one, so the model omits the key — that must parse
+    result = await extract_memories("chat", StubLLM(_TWO_MEMORIES))
+    assert [m.entities for m in result] == [[], []]
+
+
+async def test_invalid_entity_is_dropped_and_its_memory_survives() -> None:
+    # entity linking is enrichment: a malformed entity costs its link, never the memory
+    reply = """{"memories": [
+      {"type": "entity_fact", "content": "On the Pro plan.", "entities": [
+        {"canonical_name": "Acme", "type": "company"},
+        {"canonical_name": "Acme", "type": "organization", "mentions": ["Acme"]}
+      ]}
+    ]}"""
+    result = await extract_memories("chat", StubLLM(reply))
+
+    assert len(result) == 1
+    assert result[0].content == "On the Pro plan."
+    assert [e.type for e in result[0].entities] == [EntityType.organization]
+
+
+async def test_sends_entity_rules_to_model() -> None:
+    stub = StubLLM('{"memories": []}')
+    await extract_memories("chat", stub)
+
+    system = (stub.calls[0]["system"] or "").lower()
+    # an off-vocabulary type partitions M2.6's alias index and so splits one real
+    # thing into two entities — the closed vocabulary is what prevents that
+    assert "organization" in system
+    assert "product" in system
+    # S5's exclusions are what keep ticket numbers out of the entity table
+    assert "ticket number" in system

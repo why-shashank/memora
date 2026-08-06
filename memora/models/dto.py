@@ -19,6 +19,19 @@ class MemoryType(StrEnum):
     procedure = "procedure"
 
 
+class EntityType(StrEnum):
+    """What kind of real-world thing an entity is (S5's three types).
+
+    Closed because it is half of the alias index's key (`entity_aliases`): a model
+    that invented "company" alongside "organization" would partition the same
+    customer into two entities that can never resolve to each other.
+    """
+
+    person = "person"
+    organization = "organization"
+    product = "product"
+
+
 class MemoryStatus(StrEnum):
     candidate = "candidate"
     verified = "verified"
