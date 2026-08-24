@@ -1,4 +1,4 @@
-"""memora.models — see development-plan.md §4."""
+"""memora.models — the memory vocabulary: Pydantic DTOs at the boundary, ORM rows at rest."""
 
 from memora.models.dto import (
     ActorType,

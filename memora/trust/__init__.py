@@ -1,1 +1,1 @@
-"""memora.trust — see development-plan.md §4."""
+"""memora.trust — the candidate→verified→promoted gate and provenance. Not yet implemented."""

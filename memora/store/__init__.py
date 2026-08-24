@@ -1,1 +1,1 @@
-"""memora.store — see development-plan.md §4."""
+"""memora.store — the persistence boundary: StorageBackend and its Postgres implementation."""

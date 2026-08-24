@@ -1,1 +1,1 @@
-"""memora.mcp — see development-plan.md §4."""
+"""memora.mcp — MCP server exposing memora's tools to agents. Not yet implemented."""

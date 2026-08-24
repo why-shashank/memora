@@ -1,4 +1,4 @@
-"""memora.extraction — see development-plan.md §4."""
+"""memora.extraction — turning an interaction into typed memory candidates via an LLM."""
 
 from memora.extraction.pipeline import (
     ExtractedEntity,

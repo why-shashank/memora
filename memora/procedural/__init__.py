@@ -1,1 +1,1 @@
-"""memora.procedural — see development-plan.md §4."""
+"""memora.procedural — capturing and replaying learned procedures. Not yet implemented."""

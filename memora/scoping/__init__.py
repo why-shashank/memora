@@ -1,1 +1,1 @@
-"""memora.scoping — see development-plan.md §4."""
+"""memora.scoping — scope (user/agent/run/app) and actor attribution. Not yet implemented."""

@@ -1,1 +1,1 @@
-"""memora.lifecycle — see development-plan.md §4."""
+"""memora.lifecycle — decay, forgetting and deletion of memories. Not yet implemented."""

@@ -1,1 +1,1 @@
-"""memora.observability — see development-plan.md §4."""
+"""memora.observability — structured logging and OpenTelemetry tracing."""
