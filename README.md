@@ -1,6 +1,26 @@
-# memora
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/memora-mark-white.svg">
+    <img src="assets/memora-mark-black.svg" alt="" width="72" height="72">
+  </picture>
+</p>
 
-**A memory engine for AI agents — built so that what an agent remembers stays correct.**
+<h1 align="center">memora</h1>
+
+<p align="center"><strong>Agent memory, built to be corrected.</strong></p>
+
+<p align="center">
+  <a href="https://github.com/why-shashank/memora/actions/workflows/ci.yml"><img alt="ci" src="https://img.shields.io/github/actions/workflow/status/why-shashank/memora/ci.yml?branch=main&style=flat-square&label=ci"></a>
+  <img alt="status: work in progress" src="https://img.shields.io/badge/status-work_in_progress-f59e0b?style=flat-square">
+  <img alt="python 3.12+" src="https://img.shields.io/badge/python-3.12+-555?style=flat-square">
+  <img alt="typed: mypy strict" src="https://img.shields.io/badge/typed-mypy_strict-555?style=flat-square">
+  <a href="https://www.conventionalcommits.org"><img alt="conventional commits" src="https://img.shields.io/badge/commits-conventional-555?style=flat-square"></a>
+  <a href="LICENSE"><img alt="license: Apache-2.0" src="https://img.shields.io/badge/license-Apache--2.0-555?style=flat-square"></a>
+</p>
+
+<p align="center">
+  <em>self-hosted &nbsp;·&nbsp; append-only &nbsp;·&nbsp; open source</em>
+</p>
 
 > [!WARNING]
 > **Work in progress — not production-ready.** memora is incomplete and under active development. The write and read paths work, and every number below came out of the eval harness — but none of this has run outside my own machine. Expect rough edges, expect the API to change, and read the quickstart as *should work* rather than *known to work everywhere*. If something behaves differently from what's described here, that's a bug worth reporting rather than something you're doing wrong.
