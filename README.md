@@ -10,12 +10,12 @@
 <p align="center"><strong>Agent memory, built to be corrected.</strong></p>
 
 <p align="center">
-  <a href="https://github.com/why-shashank/memora/actions/workflows/ci.yml"><img alt="ci" src="https://img.shields.io/github/actions/workflow/status/why-shashank/memora/ci.yml?branch=main&style=flat-square&label=ci"></a>
+  <a href="https://github.com/why-shashank/memora/actions/workflows/ci.yml"><img alt="ci" src="https://img.shields.io/github/actions/workflow/status/why-shashank/memora/ci.yml?branch=main&style=flat-square&label=ci&logo=githubactions&logoColor=white"></a>
   <img alt="status: work in progress" src="https://img.shields.io/badge/status-work_in_progress-f59e0b?style=flat-square">
-  <img alt="python 3.12+" src="https://img.shields.io/badge/python-3.12+-555?style=flat-square">
-  <img alt="typed: mypy strict" src="https://img.shields.io/badge/typed-mypy_strict-555?style=flat-square">
-  <a href="https://www.conventionalcommits.org"><img alt="conventional commits" src="https://img.shields.io/badge/commits-conventional-555?style=flat-square"></a>
-  <a href="LICENSE"><img alt="license: Apache-2.0" src="https://img.shields.io/badge/license-Apache--2.0-555?style=flat-square"></a>
+  <img alt="python 3.12+" src="https://img.shields.io/badge/python-3.12+-3776AB?style=flat-square&logo=python&logoColor=white">
+  <img alt="typed: mypy strict" src="https://img.shields.io/badge/typed-mypy_strict-1f6feb?style=flat-square">
+  <a href="https://www.conventionalcommits.org"><img alt="conventional commits" src="https://img.shields.io/badge/commits-conventional-FE5196?style=flat-square&logo=conventionalcommits&logoColor=white"></a>
+  <a href="LICENSE"><img alt="license: Apache-2.0" src="https://img.shields.io/badge/license-Apache--2.0-1f6feb?style=flat-square"></a>
 </p>
 
 <p align="center">
